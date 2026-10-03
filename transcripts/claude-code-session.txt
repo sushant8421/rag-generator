@@ -1,0 +1,2887 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.287
+           Opus 5.5 · Claude Max
+ ▘▘   ▝▝   ~/Downloads/rag-generator
+
+▎ Your voice can help guide AI
+▎ Take 15 min to share your experiences with Anthropic Interviewer. Start now (https://clau.de/yourthoughts)
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 5.5 and saved as your default for new sessions
+
+❯ [Image #1]                                                                    
+  I need to build a RAG generator which can accept documents at runtime and     
+  allow users to ask questions on those documents. It should be able to work    
+  with different set of documents without making any code changes everytime.    
+                                                                                
+  I am planning to use Node.js with TypeScript for this and ChromaDB as the     
+  vector database.                                                              
+                                                                                
+  I want to keep the architecture modular, with separate components for         
+  document parsing, chunking, embedding generation, vector storage, retrieval   
+  and answer generation. We can expose APIs for uploading documents and asking  
+  questions on a particular document collection.                                
+                                                                                
+  Lets start by setting up the project and deciding the basic structure. We can 
+  implement it step by step, keeping things simple for now and adding           
+  complexity only if required.                                                  
+  ⎿  [Image #1]
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ While that installs, I'll write the config and module contracts.
+
+⏺ Write(tsconfig.json)
+  ⎿  Wrote 15 lines to tsconfig.json
+       1 {
+       2   "compilerOptions": {
+       3     "target": "ES2023",
+       4     "module": "nodenext",
+       5     "moduleResolution": "nodenext",
+       6     "rootDir": "src",
+       7     "outDir": "dist",
+       8     "strict": true,
+       9     "noUncheckedIndexedAccess": true,
+      10     "esModuleInterop": true,
+     … +5 lines (ctrl+o to expand)
+
+⏺ Write(docker-compose.yml)
+  ⎿  Wrote 13 lines to docker-compose.yml
+       1 services:
+       2   chroma:
+       3     image: chromadb/chroma:latest
+       4     ports:
+       5       - "8000:8000"
+       6     volumes:
+       7       - chroma-data:/data
+       8     environment:
+       9       - IS_PERSISTENT=TRUE
+      10       - ANONYMIZED_TELEMETRY=FALSE
+     … +3 lines (ctrl+o to expand)
+
+⏺ Write(.gitignore)
+  ⎿  Wrote 6 lines to .gitignore
+      1 node_modules/
+      2 dist/
+      3 .env
+      4 uploads/
+      5 *.log
+      6 .DS_Store
+
+⏺ Write(.env.example)
+  ⎿  Wrote 13 lines to .env.example
+       1 PORT=3000
+       2 
+       3 # ChromaDB (docker compose up -d)
+       4 CHROMA_URL=http://localhost:8000
+       5 
+       6 # Chunking
+       7 CHUNK_SIZE=1000
+       8 CHUNK_OVERLAP=150
+       9 
+      10 # Retrieval
+     … +3 lines (ctrl+o to expand)
+
+⏺ Write(src/config.ts)
+  ⎿  Wrote 22 lines to src/config.ts
+      1 import { z } from "zod";
+      2 
+      3 const schema = z.object({
+      4   PORT: z.coerce.number().int().positive().default(3000),
+      5   CHROMA_URL: z.url().default("http://localhost:8000"),
+      6   CHUNK_SIZE: z.coerce.number().int().positive().default(1000),
+      7   CHUNK_OVERLAP: z.coerce.number().int().nonnegative().default(15
+        0),
+      8   TOP_K: z.coerce.number().int().positive().default(5),
+      9 });
+     … +14 lines (ctrl+o to expand)
+
+⏺ Now the per-module contracts — these are the seams that keep the pipeline
+  swappable.
+
+⏺ Write(src/types.ts)
+  ⎿  Wrote 27 lines to src/types.ts
+       1 // Shared data shapes that flow between pipeline stages.
+       2 
+       3 /** Plain text extracted from an uploaded file. */
+       4 export interface ParsedDocument {
+       5   documentId: string;
+       6   filename: string;
+       7   text: string;
+       8 }
+       9 
+      10 /** A piece of a document, ready to be embedded and stored. */
+     … +19 lines (ctrl+o to expand)
+
+⏺ Write(src/parsing/types.ts)
+  ⎿  Wrote 6 lines to src/parsing/types.ts
+      1 /** Turns raw file bytes into plain text. One implementation per 
+        file type. */
+      2 export interface DocumentParser {
+      3   /** File extensions this parser handles, lowercase with dot, e.
+        g. [".pdf"]. */
+      4   readonly extensions: string[];
+      5   parse(buffer: Buffer): Promise<string>;
+      6 }
+
+⏺ Write(src/chunking/types.ts)
+  ⎿  Wrote 5 lines to src/chunking/types.ts
+      1 import type { Chunk, ParsedDocument } from "../types.js";
+      2 
+      3 export interface Chunker {
+      4   chunk(doc: ParsedDocument): Chunk[];
+      5 }
+
+⏺ Write(src/embedding/types.ts)
+  ⎿  Wrote 6 lines to src/embedding/types.ts
+      1 export interface Embedder {
+      2   /** Identifies the model; stored on the collection so we never 
+        mix vector spaces. */
+      3   readonly modelId: string;
+      4   embedDocuments(texts: string[]): Promise<number[][]>;
+      5   embedQuery(text: string): Promise<number[]>;
+      6 }
+
+⏺ Write(src/vectorstore/types.ts)
+  ⎿  Wrote 11 lines to src/vectorstore/types.ts
+       1 import type { Chunk, RetrievedChunk } from "../types.js";
+       2 
+          about this set of documents". */
+       4 export interface VectorStore {
+       5   ping(): Promise<void>;
+       7   listCollections(): Promise<string[]>;
+       8   deleteCollection(name: string): Promise<void>;
+       9   upsert(collection: string, chunks: Chunk[], embeddings: number
+      10   query(collection: string, embedding: number[], topK: number): 
+         Promise<RetrievedChunk[]>;
+     … +4 lines (ctrl+o to expand)
+
+⏺ Write(src/generation/types.ts)
+  ⎿  Wrote 5 lines to src/generation/types.ts
+      1 import type { RetrievedChunk } from "../types.js";
+      2 
+      3 export interface AnswerGenerator {
+      4   generate(question: string, context: RetrievedChunk[]): Promise<
+        string>;
+      5 }
+
+⏺ Background command "Create project, install deps, pull Chroma image" completed
+(exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Chroma v3 client takes host/port/ssl rather than a URL, so I'll parse
+  CHROMA_URL. Now the server skeleton with a health check that actually hits
+  Chroma.
+
+⏺ Write(src/vectorstore/chroma.ts)
+  ⎿  Wrote 11 lines to src/vectorstore/chroma.ts
+       1 import { ChromaClient } from "chromadb";
+       2 
+       3 export function createChromaClient(url: string): ChromaClient {
+       4   const u = new URL(url);
+       5   const ssl = u.protocol === "https:";
+       6   return new ChromaClient({
+       7     host: u.hostname,
+       8     port: u.port ? Number(u.port) : ssl ? 443 : 80,
+       9     ssl,
+      10   });
+     … +1 line (ctrl+o to expand)
+
+⏺ Write(src/api/app.ts)
+  ⎿  Wrote 30 lines to src/api/app.ts
+       1 import express, { type ErrorRequestHandler } from "express";
+       2 import type { ChromaClient } from "chromadb";
+       3 
+       4 export interface AppDeps {
+       5   chroma: ChromaClient;
+       6 }
+       7 
+       8 export function createApp({ chroma }: AppDeps) {
+       9   const app = express();
+      10   app.use(express.json());
+     … +21 lines (ctrl+o to expand)
+
+⏺ Write(src/server.ts)
+  ⎿  Wrote 10 lines to src/server.ts
+       1 import { config } from "./config.js";
+       2 import { createApp } from "./api/app.js";
+       3 import { createChromaClient } from "./vectorstore/chroma.js";
+       4 
+       5 const chroma = createChromaClient(config.CHROMA_URL);
+       7 
+       8 app.listen(config.PORT, () => {
+       9   console.log(`RAG server listening on http://localhost:${config
+         .PORT}`);
+      10 });
+     … +1 line (ctrl+o to expand)
+⏺ Bash(cd ~/Downloads/rag-generator && node -e '
+      const p=require("./package.json");…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated package.json (+10 -3)
+       1  {
+       2    "name": "rag-generator",
+       3    "version": "1.0.0",
+       4 -  "description": "",                                           
+       5 -  "main": "index.js",                                          
+       4 +  "description": "Runtime RAG generator: upload documents into 
+         +collections and ask grounded questions",                       
+       5    "scripts": {
+       7 -    "test": "echo \"Error: no test specified\" && exit 1"      
+       6 +    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+       7 +    "build": "tsc",                                            
+       8 +    "start": "node --env-file-if-exists=.env dist/server.js",  
+       9 +    "typecheck": "tsc --noEmit",                               
+      10 +    "chroma:up": "docker compose up -d chroma"                 
+      11    },
+      12    "keywords": [],
+      13    "author": "",
+     ...
+      24      "@types/node": "^22.20.5",
+      25      "tsx": "^4.23.15",
+      26      "typescript": "^7.0.2"
+      27 +  },                                                           
+      28 +  "type": "module",                                            
+      29 +  "engines": {                                                 
+      30 +    "node": ">=22"                                             
+      31    }
+      32  }
+
+⏺ Typecheck passes. Now an end-to-end check: start Chroma, start the server, hit
+  /health with Chroma up and then down.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Health check works in all three states (Chroma up, down, and back up). I'll
+  add a short README documenting the structure.
+
+⏺ Write(README.md)
+  ⎿  Wrote 40 lines to README.md
+       1 # RAG Generator
+       2 
+       3 Upload documents into named **collections** at runtime, then ask
+         t means a new collection, with no code changes.
+       4 
+       5 ## Quick start
+       6 
+       8 npm install
+       9 cp .env.example .env
+      10 npm run chroma:up      # ChromaDB on :8000 (Docker)
+     … +41 lines (ctrl+o to expand)
+
+⏺ I've set up the project in ~/Downloads/rag-generator and checked it end to
+  end. With Chroma running, the server's /health returns 200. It returns 503
+  after I stop Chroma and 200 again once Chroma is back.
+
+  Structure: the folders are one per pipeline stage, as you described:
+
+  src/
+    server.ts       wiring + startup
+    config.ts       env config, validated at boot (zod)
+    types.ts        shared shapes: ParsedDocument → Chunk → RetrievedChunk → 
+  Answer
+    api/            Express routes only, no RAG logic
+    parsing/        DocumentParser   (one parser per file type)
+    chunking/       Chunker
+    embedding/      Embedder
+    vectorstore/    VectorStore (+ Chroma client)
+    generation/     AnswerGenerator
+
+  Each stage folder has a types.ts that defines its interface. The two flows
+  (ingest: parse → chunk → embed → upsert; ask: embed → retrieve → generate)
+  will only call those interfaces. That way we can swap a parser, model or store
+  without touching the pipeline.
+
+  Design decisions so far:
+  - Each document set is a Chroma collection. That's what lets new document sets
+    work without code changes. The planned routes are in the README:
+    create/list/delete collections, POST /collections/:name/documents and POST 
+    /collections/:name/query.
+  - We compute the embeddings ourselves and pass them to Chroma, instead of
+    using Chroma's built-in embedding functions. That keeps the embedding model
+    inside our code where we can swap it. Embedder.modelId will be saved on each
+    collection, so a query can't mix vectors from two different models.
+  - Kept it minimal: Express 5, multer, zod and chromadb 3.5. Node 22's built-in
+    --env-file replaces dotenv. Chroma runs from docker-compose.yml and keeps
+    its data in a named volume.
+  - Chroma's client needs a host and port: version 3 doesn't accept a URL, so
+    src/vectorstore/chroma.ts splits CHROMA_URL into host, port and SSL.
+
+  I ran git init but haven't made any commits yet. Tell me if you want an
+  initial commit.
+
+  Decision needed before step 2: which model provider. I didn't find any API
+  keys in your environment. Anthropic has no embeddings API, so there are three
+  realistic options:
+  1. Claude for answers, plus a local embedding model (all-MiniLM via
+     transformers.js). You only need one API key and embedding costs nothing,
+     but quality is a bit lower and the first run downloads about 90MB.
+  2. OpenAI for both (text-embedding-3-small plus a GPT model). One key,
+     simplest setup.
+  3. Claude for answers, plus Voyage for embeddings (Anthropic's recommended
+     pairing). Best quality, but you need two keys.
+
+  I recommend option 1. Which provider do you want, and which keys do you have?
+
+  Proposed next step: a plain-text and PDF parser and a fixed-size chunker with
+  overlap, with a few unit tests. Neither needs a model, so I can start on them
+  now while you decide.
+
+✻ Worked for 2m 43s · done 6:44 PM
+
+❯ lets use the gemeini API key we have in @city-mall/cm-ct/wisetap/ .env fiel   
+  keep it in .env for this project as so that it shoudlnt be exposed, and use   
+  it for both embedding and for answers as well                                 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I found GEMINI_API_KEY. I'll copy it into this project's .env without printing
+  it. .env is already gitignored.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The key works. Both the embedding models and the generation models are
+  available on it. I'll install the SDK and check how the embedding API behaves
+  before writing code against it.
+
+⏺ Bash(cd ~/Downloads/rag-generator && npm i -s @google/genai@2 && cat >
+      /private/tmp/claude-501/-Users-sushantyadav-Downloads/ca3bc700-b0f3-4a95-9
+      6c1-a29c19303dd6/scr…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +13 lines (ctrl+o to expand)
+  ⎿  Updated package.json (+1 -0)
+      13    "author": "",
+      14    "license": "ISC",
+      15    "dependencies": {
+      16 +    "@google/genai": "^2.27.0",                                
+      17      "chromadb": "^3.5.0",
+      18      "express": "^5.2.1",
+      19      "multer": "^2.4.0",
+  ⎿  … 1 more file changed
+  ⎿  (timeout 2m)
+
+⏺ I noticed gemini-embedding-2 collapses an array of 3 texts into a single
+  vector instead of 3 separate embeddings like embedding-001 does—without this
+  check, chunks would have silently shared one vector. Now I'll verify if
+  embedding-2 supports batching at all.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Confirmed embedding-2 returns one vector per text when wrapped individually,
+  batches cap at 100 texts, and taskType affects relevance scoring, so I'll keep
+  query/document task types and use gemini-embedding-001 and gemini-3.8-flash
+  as the defaults, configurable via .env.
+
+⏺ Write(src/embedding/gemini.ts)
+  ⎿  Wrote 40 lines to src/embedding/gemini.ts
+       1 import type { GoogleGenAI } from "@google/genai";
+       2 import type { Embedder } from "./types.js";
+       3 
+       4 const MAX_BATCH = 100; // API rejects more than 100 inputs per c
+         all
+       6 export class GeminiEmbedder implements Embedder {
+       7   constructor(
+       8     private readonly ai: GoogleGenAI,
+       9     readonly modelId: string,
+      10   ) {}
+     … +38 lines (ctrl+o to expand)
+
+⏺ Write(src/generation/gemini.ts)
+  ⎿  Wrote 28 lines to src/generation/gemini.ts
+       1 import type { GoogleGenAI } from "@google/genai";
+       2 import type { RetrievedChunk } from "../types.js";
+       3 import type { AnswerGenerator } from "./types.js";
+       5 const SYSTEM_PROMPT = `You answer questions using ONLY the provi
+         ded context excerpts.
+       6 - If the context does not contain the answer, say you could not 
+         find it in the documents. Do not use outside knowledge.
+       8 - Be concise and direct.`;
+       9 
+      10 export class GeminiAnswerGenerator implements AnswerGenerator {
+     … +24 lines (ctrl+o to expand)
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='src/config.ts'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +27 lines (ctrl+o to expand)
+  ⎿  Updated .env.example (+4 -1)
+      10  # Retrieval
+      11  TOP_K=5
+      12  
+      13 -# Embedding + LLM providers are wired in a later step.         
+      13 +# Gemini (used for both embeddings and answers)                
+      14 +GEMINI_API_KEY=                                                
+      15 +EMBEDDING_MODEL=gemini-embedding-001                           
+      16 +GENERATION_MODEL=gemini-3.8-flash                              
+  ⎿  Updated src/config.ts (+3 -0)
+       6    CHUNK_SIZE: z.coerce.number().int().positive().default(1000),
+       7    CHUNK_OVERLAP: z.coerce.number().int().nonnegative().default(
+          150),
+       8    TOP_K: z.coerce.number().int().positive().default(5),
+       9 +  GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required
+         +"),                                                            
+      10 +  EMBEDDING_MODEL: z.string().default("gemini-embedding-001"), 
+      11 +  GENERATION_MODEL: z.string().default("gemini-3.8-flash"),    
+      12  });
+      13  
+      14  const parsed = schema.safeParse(process.env);
+
+⏺ Typecheck passes. Now I'll run a live smoke test: a 150-text batch to exercise
+  the split at 100, plus retrieval ranking, a grounded answer, and an off-topic
+  question that should be refused.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(README.md)
+  ⎿  Added 7 lines
+      29  
+      30  Each stage is defined by an interface in its `types.ts`. Orches
+          tration (ingest = parse, chunk, embed, upsert; ask = embed, ret
+          rieve, generate) depends only on those interfaces, so you can s
+          wap a provider without touching the pipeline.
+      31  
+      32 +## Models                                                      
+      33 +                                                               
+      34 +Gemini is used for both stages (set `GEMINI_API_KEY` in `.env`;
+         + it is gitignored):                                            
+      35 +                                                               
+      36 +- Embeddings: `EMBEDDING_MODEL` (default `gemini-embedding-001`
+         +, 3072-dim). Documents use task type `RETRIEVAL_DOCUMENT` and q
+         +ueries `RETRIEVAL_QUERY`. Requests are batched at 100 inputs, t
+         +he API maximum.                                                
+      37 +- Answers: `GENERATION_MODEL` (default `gemini-3.8-flash`). The
+         + system prompt restricts answers to the retrieved excerpts and 
+         +requires `[n]` citations.                                      
+      38 +                                                               
+      39  ## Planned API
+      40  
+      41  | Method | Path | Purpose |
+
+⏺ Gemini is now set up for both embeddings and answers, and I tested both
+  against the live API.
+
+  Key handling: I copied GEMINI_API_KEY from wisetap/.env into
+  rag-generator/.env without ever displaying it, so it won't appear in this
+  transcript when you export it. The .env file is gitignored and readable only
+  by you (chmod 600). .env.example has an empty placeholder for the key, and
+  config.ts stops the app at startup if the key is missing.
+
+  What I added:
+  - src/embedding/gemini.ts: GeminiEmbedder, using gemini-embedding-001. It
+    splits large inputs into batches of 100, which is the most the API accepts
+    per call. Documents and queries are embedded with their separate retrieval
+    task types.
+  - src/generation/gemini.ts: GeminiAnswerGenerator, using gemini-3.8-flash at
+    temperature 0.2. Its system prompt tells it to answer only from the provided
+    excerpts, cite them as [1], [2], and say so when the answer isn't there.
+  - You can change either model in .env without touching code.
+
+  A trap I found while testing: if you pass gemini-embedding-2 several texts as
+  a plain list, it returns one combined vector instead of one per text. In a RAG
+  app that would quietly break retrieval, since every chunk would share the
+  same vector. The embedder now wraps each text separately, which works for both
+  models. It also checks that it got back as many vectors as texts it sent, and
+  fails loudly if not.
+
+  Smoke test results:
+  - 150 texts gave back 150 vectors of 3,072 values each, so batching works.
+  - For "what are your support hours?", the support-hours passage ranked first
+    (similarity 0.769 vs 0.635 and 0.566).
+  - "How long do I have to return an item?" returned "within 30 days of delivery
+    [1]", which is correct and cited.
+  - "Who is the CEO?" returned "could not find the answer in the provided
+    documents", so it didn't make something up.
+
+  Two decisions I made that you may want to revisit:
+  - I chose gemini-embedding-001 over the newer -2 because I confirmed that task
+    types make a difference on 001. I haven't checked whether -2 supports them.
+  - These vectors are normalized, so when we create Chroma collections we should
+    set them to cosine distance instead of Chroma's default L2. I'll do that in
+    the vector-store step.
+
+  Next step: the PDF and plain-text parsers plus the chunker. Then the Chroma
+  vector store and the upload and query endpoints, which connect everything end
+  to end.
+
+✻ Baked for 1m 53s · done 7:07 PM
+
+❯ lets do this lets use the docs in                                             
+  /Users/sushantyadav/Downloads/citymall-insights  for the example puspose      
+  /Users/sushantyadav/Downloads/citymall-insights/wisetap  considering this     
+  first and i will test this on UI, make a intuiitve UI fo rthis having a       
+  chatbot like strcuutre where i can ask questions, also another section where  
+  i can upload more documents section wise i coudl add more doc to existing     
+  sections or topic , This UI will help us to upload new documents, and the     
+  chat section will help us to query the documents to get the answers.          
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The docs use nested Markdown headings, tables, and mermaid blocks, so I'll
+  prefix each chunk with its heading breadcrumb to preserve context. Now
+  checking the Chroma v3 collection API before setting up the vector store.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Bash(cd ~/Downloads/rag-generator &&
+      D=node_modules/chromadb/dist/chromadb.d.ts; sed -n 1330,1348p $D; sed -n
+      1475,1500p $D; sed -n 1545,1560p $D; grep -n 'type Hnsw…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +77 lines (ctrl+o to expand)
+  ⎿  Updated package-lock.json (+48 -0)
+      11        "dependencies": {
+      12          "@google/genai": "^2.27.0",
+      13          "chromadb": "^3.5.0",
+      14 +        "dompurify": "^3.4.16",                                
+      15          "express": "^5.2.1",
+      16 +        "marked": "^18.0.14",                                  
+      17          "multer": "^2.4.0",
+      18 +        "unpdf": "^1.8.1",                                     
+      19          "zod": "^4.6.5"
+      20        },
+      21        "devDependencies": {
+     ...
+      665          "@types/node": "*"
+      666        }
+      667      },
+      668 +    "node_modules/@types/trusted-types": {                    
+      669 +      "version": "2.0.7",                                     
+      670 +      "resolved": "https://registry.npmjs.org/@types/trusted-t
+          +ypes/-/trusted-types-2.0.7.tgz",                              
+      671 +      "integrity": "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgO
+          +QNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==",       
+      672 +      "license": "MIT",                                       
+      673 +      "optional": true                                        
+      674 +    },                                                        
+      675      "node_modules/@typescript/typescript-aix-ppc64": {
+      676        "version": "7.0.2",
+      677        "resolved": "https://registry.npmjs.org/@typescript/type
+           script-aix-ppc64/-/typescript-aix-ppc64-7.0.2.tgz",
+     ...
+      1338          "node": ">= 0.8"
+      1339        }
+      1340      },
+      1341 +    "node_modules/dompurify": {                              
+      1342 +      "version": "3.4.16",                                   
+      1343 +      "resolved": "https://registry.npmjs.org/dompurify/-/dom
+           +purify-3.4.16.tgz",                                          
+      1344 +      "integrity": "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0
+           +dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==",     
+      1345 +      "license": "(MPL-2.0 OR Apache-2.0)",                  
+      1346 +      "optionalDependencies": {                              
+      1347 +        "@types/trusted-types": "^2.0.7"                     
+      1348 +      }                                                      
+      1349 +    },                                                       
+      1350      "node_modules/dunder-proto": {
+      1351        "version": "1.0.1",
+      1352        "resolved": "https://registry.npmjs.org/dunder-proto/-/
+            dunder-proto-1.0.1.tgz",
+     ...
+      1852        "integrity": "sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBP
+            KjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==",
+     … 40 more lines (ctrl+o to expand)
+  ⎿  Updated package.json (+3 -0)
+      15    "dependencies": {
+      16      "@google/genai": "^2.27.0",
+      17      "chromadb": "^3.5.0",
+      18 +    "dompurify": "^3.4.16",                                    
+      19      "express": "^5.2.1",
+      20 +    "marked": "^18.0.14",                                      
+      21      "multer": "^2.4.0",
+      22 +    "unpdf": "^1.8.1",                                         
+      23      "zod": "^4.6.5"
+      24    },
+      25    "devDependencies": {
+
+⏺ I've outlined the plan: sections map to Chroma collections with
+  replace-on-upload, chat search spans selected sections merged by distance,
+  chunks split on Markdown headings with breadcrumb prefixes, and a build-free
+  HTML/JS UI served via Express. Starting the backend now with shared types and
+  parsers.
+
+⏺ Write(src/types.ts)
+  ⎿  Added 17 lines, removed 2 lines
+      13    documentId: string;
+      14    filename: string;
+      15    index: number;
+      16 +  /** Heading breadcrumb the chunk sits under, e.g. "Wisetap > 
+         +3. Core Flows". Empty for unstructured text. */                
+      17 +  heading: string;                                             
+      18 +  /** Text that is embedded and shown to the LLM (heading bread
+         +crumb + body). */                                              
+      19    text: string;
+      20 +  uploadedAt: string; // ISO timestamp                         
+      21  }
+      22  
+      19 -/** A chunk returned by retrieval, with its similarity distance
+         - (lower = closer). */                                          
+      23 +/** A chunk returned by retrieval, with its cosine distance (lo
+         +wer = closer). */                                              
+      24  export interface RetrievedChunk extends Chunk {
+      25 +  section: string;                                             
+      26    distance: number;
+      27  }
+      28  
+      29 +export interface Source {                                      
+      30 +  n: number; // citation number used in the answer, [n]        
+      31 +  section: string;                                             
+      32 +  filename: string;                                            
+      33 +  heading: string;                                             
+      34 +  snippet: string;                                             
+      35 +  distance: number;                                            
+      36 +  cited: boolean;                                              
+      37 +}                                                              
+      38 +                                                               
+      39  export interface Answer {
+      40    answer: string;
+      26 -  sources: Array<Pick<RetrievedChunk, "documentId" | "filename"
+         - | "index" | "distance">>;                                     
+      41 +  sources: Source[];                                           
+      42  }
+⏺ Write(src/parsing/text.ts)
+  ⎿  Wrote 8 lines to src/parsing/text.ts
+      1 import type { DocumentParser } from "./types.js";
+      2 
+      3 export const textParser: DocumentParser = {
+      4   extensions: [".md", ".markdown", ".txt"],
+      5   async parse(buffer) {
+      6     return buffer.toString("utf8").replace(/^/, ""); // strip BOM
+      7   },
+      8 };
+
+⏺ Write(src/parsing/pdf.ts)
+  ⎿  Wrote 10 lines to src/parsing/pdf.ts
+       1 import { extractText } from "unpdf";
+       2 import type { DocumentParser } from "./types.js";
+       3 
+       4 export const pdfParser: DocumentParser = {
+       5   extensions: [".pdf"],
+       7     const { text } = await extractText(new Uint8Array(buffer), {
+          mergePages: true });
+       8     return text;
+       9   },
+      10 };
+     … +1 line (ctrl+o to expand)
+
+⏺ Write(src/parsing/index.ts)
+  ⎿  Wrote 14 lines to src/parsing/index.ts
+       1 import { extname } from "node:path";
+       2 import { pdfParser } from "./pdf.js";
+       3 import { textParser } from "./text.js";
+       5 
+       6 const parsers: DocumentParser[] = [textParser, pdfParser];
+       7 
+       8 export const supportedExtensions = parsers.flatMap((p) => p.exte
+       9 
+      10 /** Returns the parser for a filename, or undefined if the type 
+         is unsupported. */
+     … +7 lines (ctrl+o to expand)
+
+⏺ The parsers are done, and I'm writing the heading-aware chunker next. After
+  that come the Chroma store, the API, and the UI.
+
+⏺ Write(src/chunking/markdown.ts)
+  ⎿  Wrote 119 lines to src/chunking/markdown.ts
+       1 import type { Chunk, ParsedDocument } from "../types.js";
+       2 import type { Chunker } from "./types.js";
+       3 
+       4 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+       5 const FENCE = /^\s*(```|~~~)/;
+       6 const SEPARATORS = ["\n\n", "\n", ". ", " ", ""];
+       7 const MIN_BODY_BUDGET = 200;
+       8 
+       9 interface Section {
+      10   headings: string[];
+     … +126 lines (ctrl+o to expand)
+
+⏺ Write(src/chunking/types.ts)
+  ⎿  Added 1 line, removed 1 line
+      1  import type { Chunk, ParsedDocument } from "../types.js";
+      2  
+      3  export interface Chunker {
+      4 -  chunk(doc: ParsedDocument): Chunk[];                          
+      4 +  chunk(doc: ParsedDocument, uploadedAt?: string): Chunk[];     
+      5  }
+
+⏺ Before building on the chunker, I'll run it on the real wisetap doc and look
+  at what it produces.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The chunker performs well on the real doc, producing 30 chunks (266–997 chars)
+  with full line coverage and correct overlap, as confirmed in chunk 6. Now
+  I'll move on to testing the Chroma store.
+
+⏺ Write(src/vectorstore/types.ts)
+  ⎿  Added 20 lines, removed 3 lines
+       1  import type { Chunk, RetrievedChunk } from "../types.js";
+       2  
+       3 -/** A collection is the unit users query against: "ask question
+         -s about this set of documents". */                             
+       3 +export interface CollectionInfo {                              
+       4 +  name: string;                                                
+       5 +  displayName: string;                                         
+       6 +  embeddingModel: string;                                      
+       7 +}                                                              
+       8 +                                                               
+       9 +export interface DocumentInfo {                                
+      10 +  documentId: string;                                          
+      11 +  filename: string;                                            
+      12 +  chunkCount: number;                                          
+      13 +  uploadedAt: string;                                          
+      14 +}                                                              
+      15 +                                                               
+      16 +/** A collection holds one "section": a set of documents users 
+         +can query together. */                                         
+      17  export interface VectorStore {
+      18    ping(): Promise<void>;
+       6 -  createCollection(name: string): Promise<void>;               
+       7 -  listCollections(): Promise<string[]>;                        
+      19 +  listCollections(): Promise<CollectionInfo[]>;                
+      20 +  getCollection(name: string): Promise<CollectionInfo | undefin
+         +ed>;                                                           
+      21 +  /** Creates the collection if missing; returns its info eithe
+         +r way. */                                                      
+      22 +  ensureCollection(info: CollectionInfo): Promise<CollectionInf
+         +o>;                                                            
+      23    deleteCollection(name: string): Promise<void>;
+      24 +  listDocuments(collection: string): Promise<DocumentInfo[]>;  
+      25 +  deleteDocument(collection: string, documentId: string): Promi
+         +se<void>;                                                      
+      26    upsert(collection: string, chunks: Chunk[], embeddings: numbe
+          r[][]): Promise<void>;
+      27    query(collection: string, embedding: number[], topK: number):
+           Promise<RetrievedChunk[]>;
+      28  }
+
+⏺ Write(src/vectorstore/chroma.ts)
+  ⎿  Added 125 lines, removed 1 line
+      1 -import { ChromaClient } from "chromadb";                        
+      1 +import { ChromaClient, type Collection } from "chromadb";       
+      2 +import type { Chunk, RetrievedChunk } from "../types.js";       
+      3 +import type { CollectionInfo, DocumentInfo, VectorStore } from "
+        +./types.js";                                                    
+      4  
+      5 +const UPSERT_BATCH = 500;                                       
+      6 +                                                                
+      7  export function createChromaClient(url: string): ChromaClient {
+      8    const u = new URL(url);
+      9    const ssl = u.protocol === "https:";
+     ...
+       13      ssl,
+       14    });
+       15  }
+       16 +                                                              
+       17 +interface ChunkMetadata {                                     
+       18 +  documentId: string;                                         
+       19 +  filename: string;                                           
+       20 +  index: number;                                              
+       21 +  heading: string;                                            
+       22 +  uploadedAt: string;                                         
+       23 +  [key: string]: string | number;                             
+       24 +}                                                             
+       25 +                                                              
+       26 +export class ChromaVectorStore implements VectorStore {       
+       27 +  constructor(private readonly client: ChromaClient) {}       
+       28 +                                                              
+       29 +  async ping() {                                              
+       30 +    await this.client.heartbeat();                            
+       31 +  }                                                           
+       32 +                                                              
+       33 +  async listCollections(): Promise<CollectionInfo[]> {        
+       34 +    const cols = await this.client.listCollections();         
+       35 +    return cols.map(toInfo).sort((a, b) => a.displayName.local
+          +eCompare(b.displayName));                                     
+       36 +  }                                                           
+       37 +                                                              
+       38 +  async getCollection(name: string): Promise<CollectionInfo | 
+          +undefined> {                                                  
+       39 +    const col = await this.find(name);                        
+       40 +    return col && toInfo(col);                                
+       41 +  }                                                           
+       42 +                                                              
+       43 +  async ensureCollection(info: CollectionInfo): Promise<Collec
+          +tionInfo> {                                                   
+       44 +    const col = await this.client.getOrCreateCollection({     
+       45 +      name: info.name,                                        
+       46 +      metadata: { displayName: info.displayName, embeddingMode
+          +l: info.embeddingModel },                                     
+       47 +      configuration: { hnsw: { space: "cosine" } },           
+       48 +      embeddingFunction: null, // we always supply our own emb
+          +eddings                                                       
+       49 +    });                                                       
+       50 +    return toInfo(col);                                       
+       51 +  }                                                           
+       52 +                                                              
+       53 +  async deleteCollection(name: string) {                      
+       54 +    await this.client.deleteCollection({ name });             
+       55 +  }                                                           
+       56 +                                                              
+       57 +  async listDocuments(collection: string): Promise<DocumentInf
+          +o[]> {                                                        
+       58 +    const col = await this.open(collection);                  
+       59 +    const res = await col.get<ChunkMetadata>({ include: ["meta
+          +datas"] });                                                   
+       60 +    const docs = new Map<string, DocumentInfo>();             
+       61 +    for (const m of res.metadatas) {                          
+       62 +      if (!m) continue;                                       
+       63 +      const d = docs.get(m.documentId);                       
+       64 +      if (d) d.chunkCount++;                                  
+       65 +      else docs.set(m.documentId, { documentId: m.documentId, 
+          +filename: m.filename, uploadedAt: m.uploadedAt, chunkCount: 1 
+          +});                                                           
+       66 +    }                                                         
+       67 +    return [...docs.values()].sort((a, b) => b.uploadedAt.loca
+          +leCompare(a.uploadedAt));                                     
+       68 +  }                                                           
+       69 +                                                              
+       70 +  async deleteDocument(collection: string, documentId: string)
+          + {                                                            
+       71 +    const col = await this.open(collection);                  
+       72 +    await col.delete({ where: { documentId } });              
+       73 +  }                                                           
+       74 +                                                              
+       75 +  async upsert(collection: string, chunks: Chunk[], embeddings
+          +: number[][]) {                                               
+       76 +    const col = await this.open(collection);                  
+       77 +    for (let i = 0; i < chunks.length; i += UPSERT_BATCH) {   
+       78 +      const batch = chunks.slice(i, i + UPSERT_BATCH);        
+       79 +      await col.upsert({                                      
+       80 +        ids: batch.map((c) => c.id),                          
+       81 +        embeddings: embeddings.slice(i, i + UPSERT_BATCH),    
+       82 +        documents: batch.map((c) => c.text),                  
+       83 +        metadatas: batch.map((c) => ({                        
+       84 +          documentId: c.documentId,                           
+       85 +          filename: c.filename,                               
+       86 +          index: c.index,                                     
+       87 +          heading: c.heading,                                 
+       88 +          uploadedAt: c.uploadedAt,                           
+       89 +        })),                                                  
+       90 +      });                                                     
+       91 +    }                                                         
+       92 +  }                                                           
+       93 +                                                              
+       94 +  async query(collection: string, embedding: number[], topK: n
+          +umber): Promise<RetrievedChunk[]> {                           
+       95 +    const col = await this.open(collection);                  
+       96 +    const res = await col.query<ChunkMetadata>({              
+       97 +      queryEmbeddings: [embedding],                           
+       98 +      nResults: topK,                                         
+       99 +      include: ["documents", "metadatas", "distances"],       
+      100 +    });                                                       
+      101 +    const ids = res.ids[0] ?? [];                             
+      102 +    return ids.map((id, i) => {                               
+      103 +      const m = res.metadatas[0]![i]!;                        
+      104 +      return {                                                
+      105 +        id,                                                   
+      106 +        section: collection,                                  
+      107 +        documentId: m.documentId,                             
+      108 +        filename: m.filename,                                 
+      109 +        index: m.index,                                       
+      110 +        heading: m.heading,                                   
+      111 +        uploadedAt: m.uploadedAt,                             
+      112 +        text: res.documents[0]![i] ?? "",                     
+      113 +        distance: res.distances[0]![i] ?? 1,                  
+      114 +      };                                                      
+      115 +    });                                                       
+      116 +  }                                                           
+      117 +                                                              
+      118 +  private async find(name: string): Promise<Collection | undef
+          +ined> {                                                       
+      119 +    const cols = await this.client.listCollections();         
+      120 +    return cols.find((c) => c.name === name);                 
+      121 +  }                                                           
+      122 +                                                              
+      123 +  private async open(name: string): Promise<Collection> {     
+      124 +    return this.client.getCollection({ name, embeddingFunction
+          +: null as never });                                           
+      125 +  }                                                           
+      126 +}                                                             
+      127 +                                                              
+      128 +function toInfo(col: Collection): CollectionInfo {            
+      129 +  const md = col.metadata ?? {};                              
+      130 +  return {                                                    
+      131 +    name: col.name,                                           
+      132 +    displayName: typeof md.displayName === "string" ? md.displ
+          +ayName : col.name,                                            
+      133 +    embeddingModel: typeof md.embeddingModel === "string" ? md
+          +.embeddingModel : "unknown",                                  
+      134 +  };                                                          
+      135 +}                                                             
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Typecheck passes. getCollection doesn't accept null, so I'll remove that cast
+  hack and check at runtime whether leaving it out causes warnings.
+
+⏺ Bash(cd ~/Downloads/rag-generator && sed -i '' 's/return
+      this.client.getCollection({ name, embeddingFunction: null as never
+      });/return this.client.getCollection({ na…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated src/vectorstore/chroma.ts (+1 -1)
+      121    }
+      122  
+      123    private async open(name: string): Promise<Collection> {
+      124 -    return this.client.getCollection({ name, embeddingFunction
+          -: null as never });                                           
+      124 +    return this.client.getCollection({ name });               
+      125    }
+      126  }
+      127  
+
+❯ Also, keep the size check intact. We could max allow a PDF of, let's say, 100 
+  pages at one time, and for the Markdown files, we will allow, let's say,      
+  again, 100 pages or invites. Do a similar thing with respect to bytes,        
+  considering it's 100 pages, so that no one should upload a big file in the    
+  system. We could later handle the scalability, but for now, let's keep it     
+  that way. Also, we will keep the uploading of further documents as an async   
+  process so that it should not block the API server, where we are allowing     
+  users to query their documents. Let's use the async process here.             
+  We could use a queuing-based system, and the consumers or workers would be    
+  processing those documents, saving and passing that through the pipeline that 
+  we have created:                                                              
+  1. Parsing the document                                                       
+  2. Chunking the document                                                      
+  3. Fetching the embedding through the Gemini API                              
+  4. Saving it to the vector database                                           
+     The queries that we are going to do will be going through this API server, 
+  then retrieved from the database, and then it'll make calls. This RAG or the  
+  database is to be used as the tool.                                           
+
+❯ For now, to not make things complex, we can skip the queuing part and         
+  directly do both the things at the API server level. Later, we can document   
+  it out in a separate doc for further improvements in this project.            
+
+⏺ I've confirmed my understanding: PDFs are capped at 100 pages/20MB, text at
+  ~300KB, all env-configurable with upload-time checks; ingestion runs async via
+  a background worker behind an IngestionQueue interface (no external queue
+  needed yet, upgradeable later), returning job IDs for polling. I'll implement
+  this and write up future-improvement notes at the end.
+
+⏺ Write(src/errors.ts)
+  ⎿  Wrote 9 lines to src/errors.ts
+      1 /** An error whose message is safe to show to API clients. */
+      2 export class HttpError extends Error {
+      3   constructor(
+      4     readonly status: number,
+      5     message: string,
+      6   ) {
+      7     super(message);
+      8   }
+      9 }
+
+⏺ Write(src/ingestion/validate.ts)
+  ⎿  Wrote 49 lines to src/ingestion/validate.ts
+       1 import { extname } from "node:path";
+       2 import { getDocumentProxy } from "unpdf";
+       3 import { HttpError } from "../errors.js";
+       4 import { parserFor, supportedExtensions } from "../parsing/index
+         .js";
+       6 export interface UploadLimits {
+       7   maxPdfPages: number;
+       8   maxPdfBytes: number;
+       9   maxTextBytes: number;
+      10 }
+     … +49 lines (ctrl+o to expand)
+
+⏺ Write(src/ingestion/pipeline.ts)
+  ⎿  Wrote 52 lines to src/ingestion/pipeline.ts
+       1 import { randomUUID } from "node:crypto";
+       2 import type { Chunker } from "../chunking/types.js";
+       3 import type { Embedder } from "../embedding/types.js";
+       4 import { parserFor } from "../parsing/index.js";
+       5 import type { VectorStore } from "../vectorstore/types.js";
+       7 export type IngestStage = "parsing" | "chunking" | "embedding" |
+          "storing";
+       8 
+       9 export interface IngestResult {
+      10   documentId: string;
+     … +53 lines (ctrl+o to expand)
+
+⏺ Write(src/ingestion/queue.ts)
+  ⎿  Wrote 91 lines to src/ingestion/queue.ts
+       1 import { randomUUID } from "node:crypto";
+       2 import type { IngestionPipeline, IngestResult, IngestStage } fro
+         m "./pipeline.js";
+       4 export type JobStatus = "queued" | IngestStage | "done" | "faile
+         d";
+       5 
+       6 export interface IngestJob {
+       8   section: string;
+       9   filename: string;
+      10   status: JobStatus;
+     … +90 lines (ctrl+o to expand)
+
+⏺ I noticed a race condition: simultaneous uploads of the same filename into a
+  section could miss each other and create duplicates. I'll update the queue to
+  prevent concurrent jobs for the same section and filename.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I'll remove the destroy() call since unpdf's PDF document type doesn't have
+  that method and can rely on garbage collection instead, and I'll keep using
+  new Uint8Array(buffer) to copy the bytes so pdf.js doesn't detach the upload
+  buffer the job still needs.
+
+⏺ Bash(cd ~/Downloads/rag-generator && sed -i '' '/await pdf.destroy();/d'
+      src/ingestion/validate.ts && npx tsc --noEmit && echo OK)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated src/ingestion/validate.ts (+0 -1)
+      27      try {
+      28        const pdf = await getDocumentProxy(new Uint8Array(buffer)
+          );
+      29        pages = pdf.numPages;
+      30 -      await pdf.destroy();                                     
+      30      } catch {
+      31        throw new HttpError(400, "Could not read PDF (corrupt or 
+          password-protected?)");
+      32      }
+
+⏺ Now the query service. It searches the selected sections, merges the hits,
+  generates an answer, and marks which sources the answer actually cited.
+
+⏺ Write(src/query/ask.ts)  ⎿  Wrote 64 lines to src/query/ask.ts
+       1 import type { Embedder } from "../embedding/types.js";
+       2 import { HttpError } from "../errors.js";
+       3 import type { AnswerGenerator } from "../generation/types.js";
+       4 import type { Answer, RetrievedChunk } from "../types.js";
+       5 import type { VectorStore } from "../vectorstore/types.js";
+       7 const SNIPPET_CHARS = 400;
+       8 
+       9 /** embed question -> retrieve from one or more sections -> gene
+         rate grounded answer. */
+      10 export class AskService {
+     … +68 lines (ctrl+o to expand)
+
+⏺ Write(src/generation/gemini.ts)
+  ⎿  Added 7 lines, removed 6 lines
+       3  import type { AnswerGenerator } from "./types.js";
+       4  
+       5  const SYSTEM_PROMPT = `You answer questions using ONLY the prov
+          ided context excerpts.
+       6 -- If the context does not contain the answer, say you could not
+         - find it in the documents. Do not use outside knowledge.       
+       7 -- Cite the excerpts you used inline as [1], [2], etc.          
+       8 -- Be concise and direct.`;                                     
+       6 +- If the excerpts do not contain the answer, say you could not 
+         +find it in the documents. Do not use outside knowledge or guess
+         +.                                                              
+       7 +- If the excerpts only partially answer the question, answer wh
+         +at they support and say what is missing.                       
+       8 +- Cite the excerpts you used inline as [1], [2], etc., right af
+         +ter the claim they support.                                    
+       9 +- Be concise and direct. Use Markdown (short paragraphs, bullet
+         + lists, tables, \`code\`) where it helps readability.`;        
+      10  
+      11  export class GeminiAnswerGenerator implements AnswerGenerator {
+      12    constructor(
+     ...
+      16  
+      17    async generate(question: string, context: RetrievedChunk[]): 
+          Promise<string> {
+      18      const excerpts = context
+      18 -      .map((c, i) => `[${i + 1}] (source: ${c.filename})\n${c.t
+         -ext}`)                                                         
+      19 -      .join("\n\n");                                           
+      19 +      .map((c, i) => `[${i + 1}] (section: ${c.section}; file: 
+         +${c.filename})\n${c.text}`)                                    
+      20 +      .join("\n\n---\n\n");                                    
+      21  
+      22      const res = await this.ai.models.generateContent({
+      23        model: this.model,
+      23 -      contents: `Context:\n${excerpts || "(no relevant excerpts
+         - found)"}\n\nQuestion: ${question}`,                           
+      24 +      contents: `Context excerpts:\n\n${excerpts}\n\nQuestion: 
+         +${question}`,                                                  
+      25        config: { systemInstruction: SYSTEM_PROMPT, temperature: 
+          0.2 },
+      26      });
+      27      return res.text?.trim() ?? "";
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='src/config.ts'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +11 lines (ctrl+o to expand)
+  ⎿  Updated .env.example (+9 -0)
+      10  # Retrieval
+      11  TOP_K=5
+      12  
+      13 +# Upload limits (checked at upload time)                       
+      14 +MAX_PDF_PAGES=100                                              
+      15 +MAX_PDF_BYTES=20971520                                         
+      16 +MAX_TEXT_BYTES=307200                                          
+      17 +MAX_FILES_PER_UPLOAD=10                                        
+      18 +                                                               
+      19 +# Background ingestion jobs running at once                    
+      20 +INGEST_CONCURRENCY=2                                           
+      21 +                                                               
+      22  # Gemini (used for both embeddings and answers)
+      23  GEMINI_API_KEY=
+      24  EMBEDDING_MODEL=gemini-embedding-001
+  ⎿  Updated src/config.ts (+5 -0)
+       6    CHUNK_SIZE: z.coerce.number().int().positive().default(1000),
+       7    CHUNK_OVERLAP: z.coerce.number().int().nonnegative().default(
+          150),
+       8    TOP_K: z.coerce.number().int().positive().default(5),
+       9 +  MAX_PDF_PAGES: z.coerce.number().int().positive().default(100
+         +),                                                             
+      10 +  MAX_PDF_BYTES: z.coerce.number().int().positive().default(20 
+         +* 1024 * 1024), // 20 MB                                       
+      11 +  MAX_TEXT_BYTES: z.coerce.number().int().positive().default(30
+         +0 * 1024), // ~100 pages at ~3,000 chars/page                  
+      12 +  MAX_FILES_PER_UPLOAD: z.coerce.number().int().positive().defa
+         +ult(10),                                                       
+      13 +  INGEST_CONCURRENCY: z.coerce.number().int().positive().defaul
+         +t(2),                                                          
+      14    GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required
+          "),
+      15    EMBEDDING_MODEL: z.string().default("gemini-embedding-001"),
+      16    GENERATION_MODEL: z.string().default("gemini-3.8-flash"),
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Multer decodes filenames as latin1 by default, which garbles non-ASCII names,
+  so I'll set defParamCharset: "utf8". Next, the API layer:
+
+⏺ Write(src/api/app.ts)
+  ⎿  Added 172 lines, removed 9 lines
+        1 -import express, { type ErrorRequestHandler } from "express";  
+        2 -import type { ChromaClient } from "chromadb";                 
+        1 +import { basename, join } from "node:path";                   
+        2 +import express, { type ErrorRequestHandler, type Request } fro
+          +m "express";                                                  
+        3 +import multer from "multer";                                  
+        4 +import { z } from "zod";                                      
+        5 +import type { Config } from "../config.js";                   
+        6 +import { HttpError } from "../errors.js";                     
+        7 +import type { IngestionQueue } from "../ingestion/queue.js";  
+        8 +import { validateUpload } from "../ingestion/validate.js";    
+        9 +import { supportedExtensions } from "../parsing/index.js";    
+       10 +import type { AskService } from "../query/ask.js";            
+       11 +import type { VectorStore } from "../vectorstore/types.js";   
+       12  
+       13  export interface AppDeps {
+        5 -  chroma: ChromaClient;                                       
+       14 +  config: Config;                                             
+       15 +  store: VectorStore;                                         
+       16 +  queue: IngestionQueue;                                      
+       17 +  askService: AskService;                                     
+       18 +  embeddingModel: string;                                     
+       19  }
+       20  
+        8 -export function createApp({ chroma }: AppDeps) {              
+       21 +const createSectionBody = z.object({ displayName: z.string().t
+          +rim().min(1).max(100) });                                     
+       22 +const askBody = z.object({                                    
+       23 +  question: z.string().trim().min(1).max(2000),               
+       24 +  sections: z.array(z.string()).default([]),                  
+       25 +});                                                           
+       26 +                                                              
+       27 +export function createApp({ config, store, queue, askService, 
+          +embeddingModel }: AppDeps) {                                  
+       28    const app = express();
+       10 -  app.use(express.json());                                    
+       29 +  app.use(express.json({ limit: "100kb" }));                  
+       30 +  app.use(express.static(join(import.meta.dirname, "../../publ
+          +ic")));                                                       
+       31 +  app.use("/vendor/marked.js", express.static(join(import.meta
+          +.dirname, "../../node_modules/marked/lib/marked.umd.js")));   
+       32 +  app.use("/vendor/purify.js", express.static(join(import.meta
+          +.dirname, "../../node_modules/dompurify/dist/purify.min.js")))
+          +;                                                             
+       33  
+       34 +  const upload = multer({                                     
+       35 +    storage: multer.memoryStorage(),                          
+       36 +    limits: { fileSize: Math.max(config.MAX_PDF_BYTES, config.
+          +MAX_TEXT_BYTES), files: config.MAX_FILES_PER_UPLOAD },        
+       37 +    defParamCharset: "utf8", // default latin1 garbles non-ASC
+          +II filenames                                                  
+       38 +  });                                                         
+       39 +                                                              
+       40    app.get("/health", async (_req, res) => {
+       41      try {
+       14 -      await chroma.heartbeat();                               
+       42 +      await store.ping();                                     
+       43        res.json({ status: "ok", chroma: "up" });
+       44      } catch {
+       45        res.status(503).json({ status: "degraded", chroma: "down
+           " });
+       46      }
+       47    });
+       48  
+       21 -  // Routes for collections, document upload and querying are 
+          -added in later steps.                                         
+       49 +  app.get("/api/config", (_req, res) => {                     
+       50 +    res.json({                                                
+       51 +      supportedExtensions,                                    
+       52 +      maxPdfPages: config.MAX_PDF_PAGES,                      
+       53 +      maxPdfBytes: config.MAX_PDF_BYTES,                      
+       54 +      maxTextBytes: config.MAX_TEXT_BYTES,                    
+       55 +      maxFilesPerUpload: config.MAX_FILES_PER_UPLOAD,         
+       56 +    });                                                       
+       57 +  });                                                         
+       58  
+       59 +  // ---- Sections (one Chroma collection each) ----          
+       60 +                                                              
+       61 +  app.get("/api/sections", async (_req, res) => {             
+       62 +    const cols = await store.listCollections();               
+       63 +    const sections = await Promise.all(                       
+       64 +      cols.map(async (c) => {                                 
+       65 +        const docs = await store.listDocuments(c.name);       
+       66 +        return {                                              
+       67 +          ...c,                                               
+       68 +          documentCount: docs.length,                         
+       69 +          chunkCount: docs.reduce((n, d) => n + d.chunkCount, 
+          +0),                                                           
+       70 +          compatible: c.embeddingModel === embeddingModel,    
+       71 +        };                                                    
+       72 +      }),                                                     
+       73 +    );                                                        
+       74 +    res.json(sections);                                       
+       75 +  });                                                         
+       76 +                                                              
+       77 +  app.post("/api/sections", async (req, res) => {             
+       78 +    const { displayName } = parse(createSectionBody, req.body)
+          +;                                                             
+       79 +    const name = slugify(displayName);                        
+       80 +    if (await store.getCollection(name)) throw new HttpError(4
+          +09, `A section named "${displayName}" already exists`);       
+       81 +    const info = await store.ensureCollection({ name, displayN
+          +ame, embeddingModel });                                       
+       82 +    res.status(201).json(info);                               
+       83 +  });                                                         
+       84 +                                                              
+       85 +  app.delete("/api/sections/:name", async (req, res) => {     
+       86 +    await requireSection(req);                                
+       87 +    await store.deleteCollection(req.params.name as string);  
+       88 +    res.status(204).end();                                    
+       89 +  });                                                         
+       90 +                                                              
+       91 +  // ---- Documents ----                                      
+       92 +                                                              
+       93 +  app.get("/api/sections/:name/documents", async (req, res) =>
+          + {                                                            
+       94 +    await requireSection(req);                                
+       95 +    res.json(await store.listDocuments(req.params.name as stri
+          +ng));                                                         
+       96 +  });                                                         
+       97 +                                                              
+       98 +  app.delete("/api/sections/:name/documents/:documentId", asyn
+          +c (req, res) => {                                             
+       99 +    await requireSection(req);                                
+      100 +    await store.deleteDocument(req.params.name as string, req.
+          +params.documentId as string);                                 
+      101 +    res.status(204).end();                                    
+      102 +  });                                                         
+      103 +                                                              
+      104 +  /** Validates files synchronously, then hands them to the ba
+          +ckground queue. Returns 202 with job ids. */                  
+      105 +  app.post("/api/sections/:name/documents", upload.array("file
+          +s"), async (req, res) => {                                    
+      106 +    const section = await requireSection(req);                
+      107 +    if (section.embeddingModel !== embeddingModel) {          
+      108 +      throw new HttpError(409, `Section was built with ${secti
+          +on.embeddingModel}; server is using ${embeddingModel}`);      
+      109 +    }                                                         
+      110 +    const files = (req.files as Express.Multer.File[] | undefi
+          +ned) ?? [];                                                   
+      111 +    if (files.length === 0) throw new HttpError(400, 'No files
+          + uploaded (use multipart field "files")');                    
+      112 +                                                              
+      113 +    const jobs = [];                                          
+      114 +    const rejected = [];                                      
+      115 +    for (const f of files) {                                  
+      116 +      const filename = basename(f.originalname);              
+      117 +      try {                                                   
+      118 +        await validateUpload(filename, f.buffer, {            
+      119 +          maxPdfPages: config.MAX_PDF_PAGES,                  
+      120 +          maxPdfBytes: config.MAX_PDF_BYTES,                  
+      121 +          maxTextBytes: config.MAX_TEXT_BYTES,                
+      122 +        });                                                   
+      123 +        jobs.push(queue.enqueue({ section: section.name, filen
+          +ame, buffer: f.buffer }));                                    
+      124 +      } catch (err) {                                         
+      125 +        if (!(err instanceof HttpError)) throw err;           
+      126 +        rejected.push({ filename, error: err.message });      
+      127 +      }                                                       
+      128 +    }                                                         
+      129 +    res.status(jobs.length ? 202 : 422).json({ jobs, rejected 
+          +});                                                           
+      130 +  });                                                         
+      131 +                                                              
+      132 +  app.get("/api/jobs", (req, res) => {                        
+      133 +    const section = typeof req.query.section === "string" ? re
+          +q.query.section : undefined;                                  
+      134 +    res.json(queue.list(section));                            
+      135 +  });                                                         
+      136 +                                                              
+      137 +  // ---- Q&A ----                                            
+      138 +                                                              
+      139 +  app.post("/api/ask", async (req, res) => {                  
+      140 +    const { question, sections } = parse(askBody, req.body);  
+      141 +    res.json(await askService.ask(question, sections));       
+      142 +  });                                                         
+      143 +                                                              
+      144 +  app.use("/api", (_req, _res) => {                           
+      145 +    throw new HttpError(404, "Not found");                    
+      146 +  });                                                         
+      147 +                                                              
+      148    const onError: ErrorRequestHandler = (err, _req, res, _next)
+            => {
+       24 -    console.error(err);                                       
+       25 -    res.status(500).json({ error: "Internal server error" }); 
+      149 +    if (err instanceof HttpError) {                           
+      150 +      res.status(err.status).json({ error: err.message });    
+      151 +    } else if (err instanceof multer.MulterError) {           
+      152 +      const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 40
+          +0;                                                            
+      153 +      const message =                                         
+      154 +        err.code === "LIMIT_FILE_SIZE"                        
+      155 +          ? `A file exceeds the ${Math.round(Math.max(config.M
+          +AX_PDF_BYTES, config.MAX_TEXT_BYTES) / 1024 / 1024)} MB upload
+          + limit`                                                       
+      156 +          : err.code === "LIMIT_FILE_COUNT"                   
+      157 +            ? `At most ${config.MAX_FILES_PER_UPLOAD} files pe
+          +r upload`                                                     
+      158 +            : err.message;                                    
+      159 +      res.status(status).json({ error: message });            
+      160 +    } else {                                                  
+      161 +      console.error(err);                                     
+      162 +      res.status(500).json({ error: "Internal server error" })
+          +;                                                             
+      163 +    }                                                         
+      164    };
+      165    app.use(onError);
+      166  
+      167 +  async function requireSection(req: Request) {               
+      168 +    const section = await store.getCollection(req.params.name 
+          +as string);                                                   
+      169 +    if (!section) throw new HttpError(404, `Section "${req.par
+          +ams.name}" not found`);                                       
+      170 +    return section;                                           
+      171 +  }                                                           
+      172 +                                                              
+      173    return app;
+      174  }
+      175 +                                                              
+      176 +function parse<T>(schema: z.ZodType<T>, body: unknown): T {   
+      177 +  const r = schema.safeParse(body);                           
+      178 +  if (!r.success) throw new HttpError(400, z.prettifyError(r.e
+          +rror));                                                       
+      179 +  return r.data;                                              
+      180 +}                                                             
+      181 +                                                              
+      182 +/** Display name -> Chroma-safe collection name: 3-63 chars of
+          + [a-z0-9-], alphanumeric at both ends. */                     
+      183 +export function slugify(displayName: string): string {        
+      184 +  const slug = displayName                                    
+      185 +    .normalize("NFKD")                                        
+      186 +    .toLowerCase()                                            
+      187 +    .replace(/[^a-z0-9]+/g, "-")                              
+      188 +    .replace(/^-+|-+$/g, "")                                  
+      189 +    .slice(0, 63)                                             
+      190 +    .replace(/-+$/, "");                                      
+      191 +  if (slug.length < 3) throw new HttpError(400, "Section name 
+          +needs at least 3 letters or digits");                         
+      192 +  return slug;                                                
+      193 +}                                                             
+
+⏺ Write(src/server.ts)
+  ⎿  Added 20 lines, removed 4 lines
+       1 -import { config } from "./config.js";                          
+       1 +import { GoogleGenAI } from "@google/genai";                   
+       2  import { createApp } from "./api/app.js";
+       3 -import { createChromaClient } from "./vectorstore/chroma.js";  
+       3 +import { MarkdownChunker } from "./chunking/markdown.js";      
+       4 +import { config } from "./config.js";                          
+       5 +import { GeminiEmbedder } from "./embedding/gemini.js";        
+       6 +import { GeminiAnswerGenerator } from "./generation/gemini.js";
+       7 +import { IngestionPipeline } from "./ingestion/pipeline.js";   
+       8 +import { InProcessQueue } from "./ingestion/queue.js";         
+       9 +import { AskService } from "./query/ask.js";                   
+      10 +import { ChromaVectorStore, createChromaClient } from "./vector
+         +store/chroma.js";                                              
+      11  
+       5 -const chroma = createChromaClient(config.CHROMA_URL);          
+       6 -const app = createApp({ chroma });                             
+      12 +const ai = new GoogleGenAI({ apiKey: config.GEMINI_API_KEY }); 
+      13 +const embedder = new GeminiEmbedder(ai, config.EMBEDDING_MODEL)
+         +;                                                              
+      14 +const generator = new GeminiAnswerGenerator(ai, config.GENERATI
+         +ON_MODEL);                                                     
+      15 +const store = new ChromaVectorStore(createChromaClient(config.C
+         +HROMA_URL));                                                   
+      16 +const chunker = new MarkdownChunker(config.CHUNK_SIZE, config.C
+         +HUNK_OVERLAP);                                                 
+      17  
+      18 +const pipeline = new IngestionPipeline(store, chunker, embedder
+         +);                                                             
+      19 +const queue = new InProcessQueue(pipeline, config.INGEST_CONCUR
+         +RENCY);                                                        
+      20 +const askService = new AskService(store, embedder, generator, c
+         +onfig.TOP_K);                                                  
+      21 +                                                               
+      22 +const app = createApp({ config, store, queue, askService, embed
+         +dingModel: embedder.modelId });                                
+      23 +                                                               
+      24  app.listen(config.PORT, () => {
+      25    console.log(`RAG server listening on http://localhost:${confi
+          g.PORT}`);
+      26  });
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Typecheck is clean. Before building the UI, I'll test the whole API with curl:
+  create the Wisetap section, upload the doc, poll the job, then ask grounded
+  questions.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The async flow worked correctly—upload returned 202 fast, the job progressed
+  and failed cleanly with no partial data left behind, but the failure was a
+  network connect timeout to Google's API despite earlier calls succeeding. I'll
+  check whether this timeout is transient.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The latency issue was transient—connections now complete in about 35ms. Since
+  ingestion runs unattended, I'll add retry logic with backoff to both Gemini
+  calls to handle network errors, 429s, and 5xx responses.
+
+⏺ Write(src/retry.ts)
+  ⎿  Wrote 21 lines to src/retry.ts
+       1 /**
+       2  * Retries transient failures (network errors, 429, 5xx) with ex
+         ponential backoff.
+       4  */
+       5 export async function withRetry<T>(fn: () => Promise<T>, attempt
+         s = 3, baseDelayMs = 1000): Promise<T> {
+       6   for (let attempt = 1; ; attempt++) {
+       8       return await fn();
+       9     } catch (err) {
+      10       if (attempt >= attempts || !isTransient(err)) throw err;
+     … +16 lines (ctrl+o to expand)
+
+⏺ Bash(cd ~/Downloads/rag-generator && grep -n "class ApiError" -A8
+      node_modules/@google/genai/dist/node/index.d.ts | head -12; python3 -
+      <<'EOF'
+      for p,old,new in […)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +12 lines (ctrl+o to expand)
+  ⎿  Updated src/embedding/gemini.ts (+8 -5)
+      1  import type { GoogleGenAI } from "@google/genai";
+      2 +import { withRetry } from "../retry.js";                        
+      3  import type { Embedder } from "./types.js";
+      4  
+      5  const MAX_BATCH = 100; // API rejects more than 100 inputs per c
+         all
+     ...
+      27      if (texts.length === 0) return [];
+      28      // Each text must be its own Content object. Passing a bare
+           string[] makes
+      29      // some models (e.g. gemini-embedding-2) return a single co
+          mbined vector.
+      29 -    const res = await this.ai.models.embedContent({            
+      30 -      model: this.modelId,                                     
+      31 -      contents: texts.map((text) => ({ role: "user", parts: [{ 
+         -text }] })),                                                   
+      32 -      config: { taskType },                                    
+      33 -    });                                                        
+      30 +    const res = await withRetry(() =>                          
+      31 +      this.ai.models.embedContent({                            
+      32 +        model: this.modelId,                                   
+      33 +        contents: texts.map((text) => ({ role: "user", parts: [
+         +{ text }] })),                                                 
+      34 +        config: { taskType },                                  
+      35 +      }),                                                      
+      36 +    );                                                         
+      37      const vectors = (res.embeddings ?? []).map((e) => e.values 
+          ?? []);
+      38      if (vectors.length !== texts.length || vectors.some((v) => 
+          v.length === 0)) {
+      39        throw new Error(`Embedding API returned ${vectors.length}
+           vectors for ${texts.length} inputs`);
+  ⎿  Updated src/generation/gemini.ts (+8 -5)
+      1  import type { GoogleGenAI } from "@google/genai";
+      2 +import { withRetry } from "../retry.js";                        
+      3  import type { RetrievedChunk } from "../types.js";
+      4  import type { AnswerGenerator } from "./types.js";
+      5  
+     ...
+      20        .map((c, i) => `[${i + 1}] (section: ${c.section}; file: 
+          ${c.filename})\n${c.text}`)
+      21        .join("\n\n---\n\n");
+      22  
+      22 -    const res = await this.ai.models.generateContent({         
+      23 -      model: this.model,                                       
+      24 -      contents: `Context excerpts:\n\n${excerpts}\n\nQuestion: 
+         -${question}`,                                                  
+      25 -      config: { systemInstruction: SYSTEM_PROMPT, temperature: 
+         -0.2 },                                                         
+      26 -    });                                                        
+      23 +    const res = await withRetry(() =>                          
+      24 +      this.ai.models.generateContent({                         
+      25 +        model: this.model,                                     
+      26 +        contents: `Context excerpts:\n\n${excerpts}\n\nQuestion
+         +: ${question}`,                                                
+      27 +        config: { systemInstruction: SYSTEM_PROMPT, temperature
+         +: 0.2 },                                                       
+      28 +      }),                                                      
+      29 +    );                                                         
+      30      return res.text?.trim() ?? "";
+      31    }
+      32  }
+
+⏺ I need to confirm the Gemini SDK's error object exposes status, since the
+  retry logic depends on it:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ It exposes status, so the retry logic works. I'll restart the server and run
+  the upload again, plus some grounded questions:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Ingestion worked: 30 chunks in about 7 s. The question test failed only
+  because my shell helper had a syntax error, so I'll fix the helper and rerun
+  the questions:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All four answers match the source doc exactly, and the off-topic question was
+  correctly refused with no citations. Next I'll test size limits,
+  replace-on-reupload behavior, and query responsiveness during uploads.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Limits work as expected—mixed batches accept valid files and reject invalid
+  ones with clear reasons—but sending 11 files caused the connection to drop
+  (HTTP 000) instead of returning a clean 400. I'll investigate that case.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Found the real issue was my test command's quoting, not the server — with
+  proper quoting it correctly returns a 400 "At most 10 files per upload" error.
+  Next I'll test re-uploading the same file and check query response speed
+  while an upload is in progress.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ While that test runs, I'll write the UI: a static page served by Express, with
+  a Chat tab and a Documents tab.
+
+⏺ Write(public/index.html)
+  ⎿  Wrote 106 lines to public/index.html
+       1 <!doctype html>
+       2 <html lang="en">
+       3 <head>
+       4   <meta charset="utf-8" />
+       5   <meta name="viewport" content="width=device-width, initial-sca
+       6   <title>DocChat</title>
+       7   <link rel="stylesheet" href="/app.css" />
+       8   <script src="/vendor/marked.js"></script>
+       9   <script src="/vendor/purify.js"></script>
+      10 </head>
+     … +115 lines (ctrl+o to expand)
+
+⏺ Write(public/app.css)
+  ⎿  Wrote 178 lines to public/app.css
+       1 :root {
+       2   --bg: #f7f7f8;
+       3   --surface: #ffffff;
+       4   --surface-2: #f1f2f4;
+       5   --border: #e3e5e8;
+       6   --text: #1c1e21;
+       7   --muted: #6b7280;
+       8   --accent: #2f6fed;
+       9   --accent-soft: #e8f0fe;
+      10   --danger: #d93025;
+     … +265 lines (ctrl+o to expand)
+
+⏺ Background command "Test re-upload replacement and query latency during
+ingestion" completed (exit code 0)
+
+  Searched for 1 pattern (ctrl+o to expand)
+⏺ All tests passed: re-upload avoided duplication, the PDF content is searchable
+  and deletable, non-LLM endpoints stay responsive during ingestion, and
+  /api/ask's 5–6s latency comes from Gemini's generation rather than blocking
+  (I'll check the thinking setting after the UI). Moving on to review the UI
+  logic now.
+
+⏺ Write(public/app.js)
+  ⎿  Wrote 460 lines to public/app.js
+      1 // DocChat UI: vanilla JS, no build step.
+      2 "use strict";
+      3 
+      4 const $ = (sel) => document.querySelector(sel);
+      5 const el = (tag, props = {}, ...children) => {
+      6   const node = Object.assign(document.createElement(tag), props);
+      7   for (const c of children) if (c != null) node.append(c);
+      8   return node;
+      9 };
+     … +540 lines (ctrl+o to expand)
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='public/app.js'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +11 lines (ctrl+o to expand)
+  ⎿  Updated public/app.js (+2 -4)
+      364    if (active) state.jobTimer = setTimeout(pollJobs, 1200);
+      365  }
+      366  
+      367 -let hadActiveJobs = false;                                    
+      367  async function pollJobs() {
+      368    if (!state.activeSection) return;
+      369    const jobs = await api(`/api/jobs?section=${encodeURICompone
+           nt(state.activeSection)}`).catch(() => []);
+      370    const active = jobs.some((j) => !["done", "failed"].includes
+           (j.status));
+      371    if (!active) {
+      373 -    hadActiveJobs = false;                                    
+      374 -    const failed = jobs.filter((j) => j.status === "failed").l
+          -ength;                                                        
+      372 +    // Only report failures from this batch, not older ones st
+          +ill in the job list.                                          
+      373 +    const failed = jobs.filter((j) => j.status === "failed" &&
+          + Date.now() - Date.parse(j.finishedAt) < 10_000).length;      
+      374      if (failed) toast(`${failed} file${failed > 1 ? "s" : ""} 
+           failed to process`, true);
+      375      else toast("Documents ready to query");
+      376      return loadSections(); // refresh counts + doc list
+      377    }
+      379 -  hadActiveJobs = true;                                       
+      378    renderJobs(jobs);
+      379  }
+      380  
+
+⏺ Before testing the UI in a browser, I'll measure the answer latency I flagged
+  earlier. Gemini 3.x Flash models "think" by default, which adds time to every
+  answer:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Setting thinking to LOW cuts generation time from 3.9s to 1.4s with no quality
+  loss, while MINIMAL isn't supported here—so I'll default to LOW, make it
+  configurable via GENERATION_THINKING_LEVEL (blank disables it for unsupported
+  models), and re-run the real questions to confirm answer quality holds.
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      import re…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +87 lines (ctrl+o to expand)
+  ⎿  Updated .env.example (+2 -0)
+      23  GEMINI_API_KEY=
+      24  EMBEDDING_MODEL=gemini-embedding-001
+      25  GENERATION_MODEL=gemini-3.8-flash
+      26 +# LOW | MEDIUM | HIGH, or empty for the model default          
+      27 +GENERATION_THINKING_LEVEL=LOW                                  
+  ⎿  Updated src/config.ts (+2 -0)
+      14    GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required
+          "),
+      15    EMBEDDING_MODEL: z.string().default("gemini-embedding-001"),
+      16    GENERATION_MODEL: z.string().default("gemini-3.8-flash"),
+      17 +  // LOW cut answer latency ~3.9s -> ~1.4s on gemini-3.8-flash.
+         + Empty = model default (for models without thinking levels).   
+      18 +  GENERATION_THINKING_LEVEL: z.enum(["", "LOW", "MEDIUM", "HIGH
+         +"]).default("LOW"),                                            
+      19  });
+      20  
+      21  const parsed = schema.safeParse(process.env);
+  ⎿  Updated src/generation/gemini.ts (+7 -2)
+      1 -import type { GoogleGenAI } from "@google/genai";               
+      1 +import type { GoogleGenAI, ThinkingLevel } from "@google/genai";
+      2  import { withRetry } from "../retry.js";
+      3  import type { RetrievedChunk } from "../types.js";
+      4  import type { AnswerGenerator } from "./types.js";
+     ...
+      13    constructor(
+      14      private readonly ai: GoogleGenAI,
+      15      private readonly model: string,
+      16 +    private readonly thinkingLevel?: string,                   
+      17    ) {}
+      18  
+      19    async generate(question: string, context: RetrievedChunk[]): 
+          Promise<string> {
+     ...
+      25        this.ai.models.generateContent({
+      26          model: this.model,
+      27          contents: `Context excerpts:\n\n${excerpts}\n\nQuestion
+          : ${question}`,
+      27 -        config: { systemInstruction: SYSTEM_PROMPT, temperature
+         -: 0.2 },                                                       
+      28 +        config: {                                              
+      29 +          systemInstruction: SYSTEM_PROMPT,                    
+      30 +          temperature: 0.2,                                    
+      31 +          ...(this.thinkingLevel && { thinkingConfig: { thinkin
+         +gLevel: this.thinkingLevel as ThinkingLevel } }),              
+      32 +        },                                                     
+      33        }),
+      34      );
+      35      return res.text?.trim() ?? "";
+  ⎿  Updated src/server.ts (+1 -1)
+      11  
+      12  const ai = new GoogleGenAI({ apiKey: config.GEMINI_API_KEY });
+      13  const embedder = new GeminiEmbedder(ai, config.EMBEDDING_MODEL)
+          ;
+      14 -const generator = new GeminiAnswerGenerator(ai, config.GENERATI
+         -ON_MODEL);                                                     
+      14 +const generator = new GeminiAnswerGenerator(ai, config.GENERATI
+         +ON_MODEL, config.GENERATION_THINKING_LEVEL);                   
+      15  const store = new ChromaVectorStore(createChromaClient(config.C
+          HROMA_URL));
+      16  const chunker = new MarkdownChunker(config.CHUNK_SIZE, config.C
+          HUNK_OVERLAP);
+      17  
+  ⎿  (timeout 3m)
+
+⏺ Latency improved from 5–6s to 2.7–4.6s with comparable answer quality, but the
+  "May 2026 incident" response looks thin since the top-ranked War Stories
+  passages weren't cited. I'll check the source to see if the model missed
+  something.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ That single line turns out to be the only mention of the incident in the doc,
+  and the War Stories passages don't apply here. Next I'll check the UI in a
+  real browser.
+
+  Called playwright 4 times (ctrl+o to expand)
+
+⏺ The UI loads, and the only console error is a missing favicon, which I'll fix.
+  Now I'm checking the layout and the chat flow in the browser.
+
+  Called playwright (ctrl+o to expand)
+
+⏺ Clean. Asking a question through the composer:
+
+  Called playwright 4 times (ctrl+o to expand)
+
+⏺ Found two issues: the excerpt truncates before reaching relevant evidence
+  (I'll show the full chunk in a scrollable box instead), and the toggle text
+  doesn't update to reflect state when a source is opened via citation click.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Now the Documents tab. I'll create a throwaway "UI Test" section, upload a doc
+  through the dropzone, and watch the background job:
+
+  Called playwright 7 times (ctrl+o to expand)
+
+⏺ The background job progress shows as expected. Next I'll wait for it to
+  finish, then check that a question searching across both sections can find the
+  new doc:
+
+  Called playwright 5 times (ctrl+o to expand)
+
+⏺ Found a bug: grouped citations like [4, 5] aren't rendered as pills or counted
+  as cited, wrongly marking sources [1] and [4] as uncited. I'll fix this by
+  parsing both citation styles in the backend and UI, and adjusting the prompt
+  to favor [1][4] format.
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='src/query/ask.ts'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +14 lines (ctrl+o to expand)
+  ⎿  Updated public/app.js (+11 -7)
+      218    return el("div", { className: "msg bot" }, el("div", { class
+           Name: "scope-tag", textContent: `Searched: ${scopeLabel(sectio
+           ns)}` }), bubble);
+      219  }
+      220  
+      221 -/** Turns "[2]" in answer text into clickable citation pills (
+          -skipping code). */                                            
+      221 +/** Turns "[2]" / "[2, 5]" in answer text into clickable citat
+          +ion pills (skipping code). */                                 
+      222  function linkCitations(root, max) {
+      223    const walker = document.createTreeWalker(root, NodeFilter.SH
+           OW_TEXT, {
+      224      acceptNode: (n) => (n.parentElement.closest("code, pre") ?
+            NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      225    });
+      226    const nodes = [];
+      227 -  while (walker.nextNode()) if (/\[\d+\]/.test(walker.currentN
+          -ode.nodeValue)) nodes.push(walker.currentNode);               
+      227 +  const CITE = /\[(\d+(?:\s*,\s*\d+)*)\]/g; // "[2]" or groupe
+          +d "[2, 5]"                                                    
+      228 +  while (walker.nextNode()) if (CITE.test(walker.currentNode.n
+          +odeValue)) nodes.push(walker.currentNode);                    
+      229    for (const node of nodes) {
+      230      const frag = document.createDocumentFragment();
+      231      let last = 0;
+      232      const text = node.nodeValue;
+      232 -    for (const m of text.matchAll(/\[(\d+)\]/g)) {            
+      233 -      const n = Number(m[1]);                                 
+      234 -      if (n < 1 || n > max) continue;                         
+      233 +    for (const m of text.matchAll(CITE)) {                    
+      234 +      const ns = m[1].split(",").map(Number);                 
+      235 +      if (ns.some((n) => n < 1 || n > max)) continue;         
+      236        frag.append(text.slice(last, m.index));
+      236 -      frag.append(el("button", { className: "cite", textConten
+          -t: n, title: `Show source ${n}` }));                          
+      237 -      frag.lastChild.dataset.n = n;                           
+      237 +      for (const n of ns) {                                   
+      238 +        const pill = el("button", { className: "cite", textCon
+          +tent: n, title: `Show source ${n}` });                        
+      239 +        pill.dataset.n = n;                                   
+      240 +        frag.append(pill);                                    
+      241 +      }                                                       
+      242        last = m.index + m[0].length;
+      243      }
+      244      frag.append(text.slice(last));
+  ⎿  Updated src/generation/gemini.ts (+1 -1)
+       6  const SYSTEM_PROMPT = `You answer questions using ONLY the prov
+          ided context excerpts.
+       7  - If the excerpts do not contain the answer, say you could not 
+          find it in the documents. Do not use outside knowledge or guess
+          .
+       8  - If the excerpts only partially answer the question, answer wh
+          at they support and say what is missing.
+       9 -- Cite the excerpts you used inline as [1], [2], etc., right af
+         -ter the claim they support.                                    
+       9 +- Cite the excerpts you used inline right after the claim they 
+         +support, one bracket per excerpt: [1] or [1][3], never [1, 3]. 
+      10  - Be concise and direct. Use Markdown (short paragraphs, bullet
+           lists, tables, \`code\`) where it helps readability.`;
+      11  
+      12  export class GeminiAnswerGenerator implements AnswerGenerator {
+  ⎿  Updated src/query/ask.ts (+7 -1)
+      38      }
+      39  
+      40      const answer = await this.generator.generate(question, hits
+          );
+      41 -    const cited = new Set([...answer.matchAll(/\[(\d+)\]/g)].ma
+         -p((m) => Number(m[1])));                                       
+      41 +    const cited = citedNumbers(answer);                        
+      42  
+      43      return {
+      44        answer,
+     ...
+      59  function snippet(h: RetrievedChunk): string {
+      60    return h.heading && h.text.startsWith(h.heading) ? h.text.sli
+          ce(h.heading.length).trim() : h.text;
+      61  }
+      62 +                                                               
+      63 +/** Citation numbers in the answer; handles both "[1][4]" and g
+         +rouped "[1, 4]" styles. */                                     
+      64 +export function citedNumbers(answer: string): Set<number> {    
+      65 +  const nums = [...answer.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)
+         +].flatMap((m) => m[1]!.split(",").map(Number));                
+      66 +  return new Set(nums);                                        
+      67 +}                                                              
+
+❯ Also, keep the flow diagram with Mermaid and the README file for the two      
+  types of things that we are doing: - Uploading a new document to the existing 
+  database of the document. It could be in the existing module or a separate    
+  module altogether. - Asking a question from a particular module. Even if the  
+  module is not provided, if a question is generic, we should internally be     
+  deciding which module it belongs to and answering from that module. I need a  
+  diagram for that. Also, if we are not maintaining this thing, let's maintain  
+  it.                                                                           
+
+⏺ The grouped citations now work in both formats. Since nothing currently picks
+  a module automatically, I'll add score-based routing (best section plus close
+  matches), make "auto" the UI default, and write a README with Mermaid diagrams
+  covering both flows.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Before choosing the margin, I'll measure what each section's best-match
+  distance actually looks like for wisetap-only, ravens-only, cross-module and
+  off-topic questions:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The scores split clearly: single-module questions show gaps of 0.064–0.140
+  between top sections, while the cross-module question has just a 0.008 gap. A
+  margin of 0.04 correctly isolates one section for single-module cases and both
+  for the cross-module case, so I'll implement that threshold now.
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='src/query/ask.ts'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated .env.example (+2 -0)
+       9  
+      10  # Retrieval
+      11  TOP_K=5
+      12 +# When no section is chosen, also answer from sections within t
+         +his distance of the best match                                 
+      13 +ROUTING_MARGIN=0.04                                            
+      14  
+      15  # Upload limits (checked at upload time)
+      16  MAX_PDF_PAGES=100
+  ⎿  Updated src/config.ts (+2 -0)
+       6    CHUNK_SIZE: z.coerce.number().int().positive().default(1000),
+       7    CHUNK_OVERLAP: z.coerce.number().int().nonnegative().default(
+          150),
+       8    TOP_K: z.coerce.number().int().positive().default(5),
+       9 +  // Auto-routing: also use sections whose best match is within
+         + this cosine distance of the best section.                     
+      10 +  ROUTING_MARGIN: z.coerce.number().nonnegative().default(0.04)
+         +,                                                              
+      11    MAX_PDF_PAGES: z.coerce.number().int().positive().default(100
+          ),
+      12    MAX_PDF_BYTES: z.coerce.number().int().positive().default(20 
+          * 1024 * 1024), // 20 MB
+      13    MAX_TEXT_BYTES: z.coerce.number().int().positive().default(30
+          0 * 1024), // ~100 pages at ~3,000 chars/page
+  ⎿  Updated src/query/ask.ts (+35 -10)
+      11      private readonly embedder: Embedder,
+      12      private readonly generator: AnswerGenerator,
+      13      private readonly topK: number,
+      14 +    private readonly routingMargin: number,                    
+      15    ) {}
+      16  
+      16 -  /** @param sections section names to search; empty means all 
+         -sections. */                                                   
+      17 +  /**                                                          
+      18 +   * @param sections sections to search. Empty = auto-route: se
+         +arch every section and                                         
+      19 +   * answer from the best-matching one (plus any within `routin
+         +gMargin` of it).                                               
+      20 +   */                                                          
+      21    async ask(question: string, sections: string[]): Promise<Answ
+          er> {
+      22      const all = await this.store.listCollections();
+      19 -    const targets = sections.length ? all.filter((c) => section
+         -s.includes(c.name)) : all;                                     
+      20 -                                                               
+      23      const unknown = sections.filter((s) => !all.some((c) => c.n
+          ame === s));
+      24      if (unknown.length) throw new HttpError(404, `Unknown secti
+          on(s): ${unknown.join(", ")}`);
+      25  
+      26 +    const mode = sections.length ? "manual" : "auto";          
+      27 +    const targets = sections.length ? all.filter((c) => section
+         +s.includes(c.name)) : all;                                     
+      28 +                                                               
+      29      // Vectors from a different embedding model live in a diffe
+          rent space; never compare them.
+      30      const searchable = targets.filter((c) => c.embeddingModel =
+          == this.embedder.modelId);
+      31      if (searchable.length === 0) {
+      27 -      return { answer: "There are no documents to search yet. U
+         -pload some in the Documents tab first.", sources: [] };        
+      32 +      return { answer: "There are no documents to search yet. U
+         +pload some in the Documents tab first.", sources: [], routing: 
+         +{ mode, sections: [] } };                                      
+      33      }
+      34  
+      35      const qv = await this.embedder.embedQuery(question);
+      31 -    const hits = (await Promise.all(searchable.map((c) => this.
+         -store.query(c.name, qv, this.topK))))                          
+      32 -      .flat()                                                  
+      33 -      .sort((a, b) => a.distance - b.distance)                 
+      34 -      .slice(0, this.topK);                                    
+      36 +    const perSection = (                                       
+      37 +      await Promise.all(searchable.map(async (c) => ({ info: c,
+         + hits: await this.store.query(c.name, qv, this.topK) })))      
+      38 +    ).filter((s) => s.hits.length > 0);                        
+      39  
+      36 -    if (hits.length === 0) {                                   
+      37 -      return { answer: "The selected sections have no documents
+         - yet.", sources: [] };                                         
+      40 +    if (perSection.length === 0) {                             
+     … 33 more lines (ctrl+o to expand)
+  ⎿  Updated src/server.ts (+1 -1)
+      17  
+      18  const pipeline = new IngestionPipeline(store, chunker, embedder
+          );
+      19  const queue = new InProcessQueue(pipeline, config.INGEST_CONCUR
+          RENCY);
+      20 -const askService = new AskService(store, embedder, generator, c
+         -onfig.TOP_K);                                                  
+      20 +const askService = new AskService(store, embedder, generator, c
+         +onfig.TOP_K, config.ROUTING_MARGIN);                           
+      21  
+      22  const app = createApp({ config, store, queue, askService, embed
+          dingModel: embedder.modelId });
+      23  
+  ⎿  Updated src/types.ts (+8 -0)
+      36    cited: boolean;
+      37  }
+      38  
+      39 +export interface Routing {                                     
+      40 +  /** auto = the server picked the section(s); manual = the use
+         +r picked them. */                                              
+      41 +  mode: "auto" | "manual";                                     
+      42 +  /** Every searched section with its closest-chunk distance; `
+         +selected` ones were used for the answer. */                    
+      43 +  sections: Array<{ name: string; displayName: string; bestDist
+         +ance: number; selected: boolean }>;                            
+      44 +}                                                              
+      45 +                                                               
+      46  export interface Answer {
+      47    answer: string;
+      48    sources: Source[];
+      49 +  routing: Routing;                                            
+      50  }
+
+⏺ Now the UI side. Chat defaults to auto, with nothing checked; checking
+  sections pins the search to them. Each answer shows which module(s) it came
+  from.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ While that runs, I'll write the README with the two Mermaid diagrams, plus the
+  separate future-improvements doc you asked for earlier.
+
+⏺ Write(README.md)
+  ⎿  Added 135 lines, removed 29 lines
+        1 -# RAG Generator                                               
+        1 +# RAG Generator (DocChat)                                     
+        2  
+        3 -Upload documents into named **collections** at runtime, then a
+          -sk questions answered only from those documents. A new documen
+          -t set means a new collection, with no code changes.           
+        3 +Upload documents into **sections** (modules/topics like "Wiset
+          +ap" or "Payments") at runtime, then ask questions that are ans
+          +wered **only** from those documents, with citations. Adding a 
+          +new document set means creating a section and uploading files,
+          + with no code changes.                                        
+        4  
+        5  ## Quick start
+        6  
+        7  ```bash
+        8  npm install
+        9 -cp .env.example .env                                          
+       10 -npm run chroma:up      # ChromaDB on :8000 (Docker)           
+       11 -npm run dev            # API on :3000                         
+       12 -curl localhost:3000/health                                    
+        9 +cp .env.example .env       # then set GEMINI_API_KEY          
+       10 +npm run chroma:up          # ChromaDB on :8000 (Docker)       
+       11 +npm run dev                # API + UI on http://localhost:3000
+       12  ```
+       13  
+       15 -## Structure                                                  
+       14 +Open http://localhost:3000:                                   
+       15  
+       16 +- **Documents tab**: create a section, then drag files into it
+          +. Upload more files to an existing section at any time. Re-upl
+          +oading a file with the same name replaces the old version.    
+       17 +- **Chat tab**: ask questions. Leave all sections unticked and
+          + the server **auto-routes** each question to the section that 
+          +best matches it. Tick sections to search only those.          
+       18 +                                                              
+       19 +## Architecture                                               
+       20 +                                                              
+       21 +```mermaid                                                    
+       22 +flowchart LR                                                  
+       23 +    UI[Browser UI<br/>public/] -->|REST| API[Express API<br/>s
+          +rc/api]                                                       
+       24 +    API -->|validate + enqueue| Q[IngestionQueue<br/>in-proces
+          +s]                                                            
+       25 +    Q --> P[IngestionPipeline]                                
+       26 +    P --> PA[parsing/<br/>md · txt · pdf]                     
+       27 +    P --> CH[chunking/<br/>heading-aware]                     
+       28 +    P --> EM[embedding/<br/>Gemini]                           
+       29 +    P --> VS[(vectorstore/<br/>ChromaDB)]                     
+       30 +    API --> ASK[AskService<br/>src/query]                     
+       31 +    ASK --> EM                                                
+       32 +    ASK --> VS                                                
+       33 +    ASK --> GEN[generation/<br/>Gemini]                       
+       34  ```
+       18 -src/                                                          
+       19 -  server.ts            entry point: wires dependencies, starts
+          - HTTP                                                         
+       20 -  config.ts            env config, validated with zod         
+       21 -  types.ts             shared shapes: ParsedDocument, Chunk, R
+          -etrievedChunk, Answer                                         
+       22 -  api/                 HTTP layer (Express); no RAG logic live
+          -s here                                                        
+       23 -  parsing/             file bytes -> text        (DocumentPars
+          -er, one per file type)                                        
+       24 -  chunking/            text -> chunks            (Chunker)    
+       25 -  embedding/           text -> vectors           (Embedder)   
+       26 -  vectorstore/         store/query vectors       (VectorStore,
+          - Chroma implementation)                                       
+       27 -  generation/          question + context -> answer (AnswerGen
+          -erator)                                                       
+       28 -```                                                           
+       35  
+       30 -Each stage is defined by an interface in its `types.ts`. Orche
+          -stration (ingest = parse, chunk, embed, upsert; ask = embed, r
+          -etrieve, generate) depends only on those interfaces, so you ca
+          -n swap a provider without touching the pipeline.              
+       36 +Each stage is an interface in its folder's `types.ts` (`Docume
+          +ntParser`, `Chunker`, `Embedder`, `VectorStore`, `AnswerGenera
+          +tor`, `IngestionQueue`), and `src/server.ts` wires the concret
+          +e implementations together. You can swap one (for example Chro
+          +ma for pgvector, or the in-process queue for BullMQ) without t
+          +ouching the others.                                           
+       37  
+       32 -## Models                                                     
+       38 +**Data model:** one section is one Chroma collection (cosine d
+          +istance). Each chunk stores `documentId`, `filename`, `heading
+          +` (breadcrumb such as `Wisetap > 3. Core Flows > (a) Event ing
+          +estion`), `index` and `uploadedAt`. The collection's metadata 
+          +records which embedding model built it, so vectors from differ
+          +ent models are never compared.                                
+       39  
+       34 -Gemini is used for both stages (set `GEMINI_API_KEY` in `.env`
+          -; it is gitignored):                                          
+       40 +## Flow 1: Uploading documents (new or existing section)      
+       41  
+       36 -- Embeddings: `EMBEDDING_MODEL` (default `gemini-embedding-001
+          -`, 3072-dim). Documents use task type `RETRIEVAL_DOCUMENT` and
+          - queries `RETRIEVAL_QUERY`. Requests are batched at 100 inputs
+          -, the API maximum.                                            
+       37 -- Answers: `GENERATION_MODEL` (default `gemini-3.8-flash`). Th
+          -e system prompt restricts answers to the retrieved excerpts an
+          -d requires `[n]` citations.                                   
+       42 +Upload is **asynchronous**. The API validates the files, queue
+          +s them, and returns `202` with job IDs straight away. A backgr
+          +ound worker in the same process then runs the pipeline, so lon
+          +g ingestions never block chat queries.                        
+       43  
+       39 -## Planned API                                                
+       44 +```mermaid                                                    
+       45 +sequenceDiagram                                               
+       46 +    autonumber                                                
+       47 +    actor U as User (Documents tab)                           
+       48 +    participant API as API server                             
+       49 +    participant Q as Ingestion queue<br/>(in-process worker)  
+       50 +    participant G as Gemini embeddings                        
+       51 +    participant DB as ChromaDB                                
+       52  
+       53 +    alt New section / module                                  
+       54 +        U->>API: POST /api/sections {displayName}             
+       55 +        API->>DB: create collection (cosine, embeddingModel in
+          + metadata)                                                    
+       56 +        API-->>U: 201 {name}                                  
+       57 +    else Existing section                                     
+       58 +        Note over U: pick it in the sidebar                   
+       59 +    end                                                       
+       60 +                                                              
+       61 +    U->>API: POST /api/sections/:name/documents (multipart, ≤1
+          +0 files)                                                      
+       62 +    API->>API: validate each file<br/>type: .md .txt .pdf<br/>
+          +PDF ≤100 pages & ≤20 MB<br/>text ≤300 KB (~100 pages)         
+       63 +    API->>Q: enqueue valid files                              
+       64 +    API-->>U: 202 {jobs, rejected[] with reasons}             
+       65 +                                                              
+       66 +    loop UI polls GET /api/jobs?section=… every ~1s           
+       67 +        U->>API: job status                                   
+       68 +    end                                                       
+       69 +                                                              
+       70 +    Note over Q: runs in background, concurrency 2,<br/>never 
+          +two jobs for the same file at once                            
+       71 +    Q->>Q: 1. parse (md/txt as UTF-8, PDF via unpdf)          
+       72 +    Q->>Q: 2. chunk: split by Markdown headings, then<br/>para
+          +graph › line › sentence (≤1000 chars, 150 overlap),<br/>prefix
+          + each chunk with its heading breadcrumb                       
+       73 +    Q->>G: 3. embed chunks (RETRIEVAL_DOCUMENT, batches of 100
+          +, retry on 429/5xx)                                           
+       74 +    G-->>Q: vectors                                           
+       75 +    Q->>DB: 4. upsert chunks + vectors + metadata             
+       76 +    Q->>DB: delete the previous version of the same filename (
+          +only after the new one is stored)                             
+       77 +    Q-->>U: job status: done (chunks, replaced?) or failed (re
+          +ason)                                                         
+       78 +```                                                           
+       79 +                                                              
+       80 +## Flow 2: Asking a question (chosen section or auto-routed)  
+       81 +                                                              
+       82 +```mermaid                                                    
+       83 +flowchart TD                                                  
+       84 +    A[User asks a question<br/>POST /api/ask {question, sectio
+          +ns?}] --> B[Embed question<br/>Gemini RETRIEVAL_QUERY]        
+       85 +    B --> C{Sections ticked?}                                 
+       86 +    C -- Yes: manual --> D[Search only the ticked sections<br/
+          +>top-K chunks each]                                           
+       87 +    C -- No: auto --> E[Search every section<br/>top-K chunks 
+          +each]                                                         
+       88 +    E --> F[Score each section by its closest chunk]          
+       89 +    F --> G[Keep the best section plus any within<br/>ROUTING_
+          +MARGIN 0.04 of it<br/>one module for focused questions,<br/>se
+          +veral for cross-module ones]                                  
+       90 +    D --> H[Merge hits and keep global top-K by distance]     
+       91 +    G --> H                                                   
+       92 +    H --> I{Any chunks?}                                      
+       93 +    I -- No --> J[Reply: no documents to search]              
+       94 +    I -- Yes --> K[Gemini answers using ONLY the excerpts<br/>
+          +cites as 1, 2 and says so when the answer isn't there]        
+       95 +    K --> L[Parse citations, mark cited sources]              
+       96 +    L --> M[Response: answer + sources + routing<br/>which sec
+          +tions were used and their match scores]                       
+       97 +    M --> N[UI: Markdown answer, clickable citation pills,<br/
+          +>'Auto-routed to Wisetap' tag]                                
+       98 +```                                                           
+       99 +                                                              
+      100 +**Why route on retrieval scores rather than an LLM classifier?
+          +** It adds no extra model call or latency, it needs no hand-wr
+          +itten section descriptions, and it updates as soon as document
+          +s are added. Calibrated on the sample docs, single-module ques
+          +tions separate by at least 0.06 cosine distance between the be
+          +st and second-best section, while cross-module questions land 
+          +within about 0.01. The 0.04 margin sits between the two, and y
+          +ou can tune it with `ROUTING_MARGIN`.                         
+      101 +                                                              
+      102 +## API                                                        
+      103 +                                                              
+      104  | Method | Path | Purpose |
+      105  | --- | --- | --- |
+       43 -| POST | `/collections` | create a collection |               
+       44 -| GET | `/collections` | list collections |                   
+       45 -| DELETE | `/collections/:name` | delete a collection |       
+       46 -| POST | `/collections/:name/documents` | upload file(s) (mult
+          -ipart) |                                                      
+       47 -| POST | `/collections/:name/query` | `{ "question": "..." }` 
+          -returns answer + sources |                                    
+      106 +| GET | `/health` | server + Chroma status |                  
+      107 +| GET | `/api/config` | upload limits, supported file types | 
+      108 +| GET | `/api/sections` | list sections with document/chunk co
+          +unts |                                                        
+      109 +| POST | `/api/sections` | `{ "displayName": "Payments" }` cre
+          +ates a section |                                              
+      110 +| DELETE | `/api/sections/:name` | delete a section and all it
+          +s documents |                                                 
+      111 +| GET | `/api/sections/:name/documents` | list documents in a 
+          +section |                                                     
+      112 +| POST | `/api/sections/:name/documents` | multipart `files` (
+          +≤10). Returns `202 { jobs, rejected }` |                      
+      113 +| DELETE | `/api/sections/:name/documents/:documentId` | remov
+          +e one document |                                              
+      114 +| GET | `/api/jobs?section=` | background ingestion job status
+          + |                                                            
+      115 +| POST | `/api/ask` | `{ "question": "...", "sections": [] }` 
+          +returns `{ answer, sources, routing }` (empty `sections` = aut
+          +o-route) |                                                    
+      116 +                                                              
+      117 +## Configuration (`.env`)                                     
+      118 +                                                              
+      119 +| Variable | Default | Notes |                                
+      120 +| --- | --- | --- |                                           
+      121 +| `GEMINI_API_KEY` | (required) | used for embeddings and answ
+          +ers; `.env` is gitignored |                                   
+      122 +| `EMBEDDING_MODEL` | `gemini-embedding-001` | 3072-dim, suppo
+          +rts retrieval task types |                                    
+      123 +| `GENERATION_MODEL` | `gemini-3.8-flash` | |                 
+      124 +| `GENERATION_THINKING_LEVEL` | `LOW` | cut answer latency fro
+          +m ~3.9 s to ~1.4 s; empty = model default |                   
+      125 +| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | characters
+          + |                                                            
+      126 +| `TOP_K` | `5` | chunks given to the LLM |                   
+      127 +| `ROUTING_MARGIN` | `0.04` | auto-routing tolerance (cosine d
+          +istance) |                                                    
+      128 +| `MAX_PDF_PAGES` / `MAX_PDF_BYTES` | `100` / 20 MB | |       
+      129 +| `MAX_TEXT_BYTES` | 300 KB | about 100 pages of text |       
+      130 +| `MAX_FILES_PER_UPLOAD` | `10` | |                           
+      131 +| `INGEST_CONCURRENCY` | `2` | background jobs running at once
+          + |                                                            
+      132 +                                                              
+      133 +## Project layout                                             
+      134 +                                                              
+      135 +```                                                           
+      136 +src/                                                          
+      137 +  server.ts            composition root: builds and wires ever
+          +y component                                                   
+      138 +  config.ts            env config, validated with zod at boot 
+      139 +  types.ts             shared shapes: ParsedDocument, Chunk, R
+          +etrievedChunk, Answer, Routing                                
+      140 +  api/app.ts           HTTP routes, upload validation, error m
+          +apping                                                        
+      141 +  parsing/             DocumentParser per file type (text.ts, 
+          +pdf.ts) + registry                                            
+      142 +  chunking/            MarkdownChunker: heading-aware recursiv
+          +e splitter                                                    
+      143 +  embedding/           Embedder → GeminiEmbedder              
+      144 +  vectorstore/         VectorStore → ChromaVectorStore        
+      145 +  generation/          AnswerGenerator → GeminiAnswerGenerator
+          + (grounding prompt)                                           
+      146 +  ingestion/           validate.ts (limits), pipeline.ts (pars
+          +e→chunk→embed→store), queue.ts (background jobs)              
+      147 +  query/ask.ts         AskService: embed → route → retrieve → 
+          +generate → cite                                               
+      148 +  retry.ts             backoff for transient Gemini errors    
+      149 +public/                UI (vanilla HTML/CSS/JS, no build step)
+      150 +docs/                  FUTURE_IMPROVEMENTS.md                 
+      151 +```                                                           
+      152 +                                                              
+      153 +See [docs/FUTURE_IMPROVEMENTS.md](docs/FUTURE_IMPROVEMENTS.md)
+          + for known limitations and the scaling plan (durable queue, se
+          +parate workers, and more).                                    
+⏺ Background command "Update UI for auto-routing; test routing via API"
+completed (exit code 0)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Routing works as calibrated across all test cases, including correctly
+  limiting answers when pinned to Wisetap, and grouped citations are now
+  properly counted (all 5 in the last answer). Next I'll move on to the
+  improvements doc.
+
+⏺ Write(docs/FUTURE_IMPROVEMENTS.md)
+  ⎿  Wrote 60 lines to docs/FUTURE_IMPROVEMENTS.md
+       1 # Future Improvements
+       3 The current version deliberately keeps things simple. This doc r
+         ly in priority order within each area.
+       5 ## 1. Durable queue + separate ingestion workers (top priority f
+       6 
+       7 **Today:** `InProcessQueue` (`src/ingestion/queue.ts`) runs inge
+         returns `202` and a worker loop runs parse → chunk → embed → sto
+          is mostly network I/O (Gemini, Chroma).
+       9 **Limitations:**
+          queued jobs and their status.
+     … +99 lines (ctrl+o to expand)
+
+⏺ Next I'll check that the four Mermaid diagrams actually parse, using the real
+  Mermaid parser in the browser:
+
+⏺ Bash(cd ~/Downloads/rag-generator && mkdir -p ../.playwright-mcp && python3 -
+      <<'EOF'
+      import re,json…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Created public/.mermaid-check.html (+7 -0)
+      1 +<!doctype html><meta charset=utf-8><body><script type=module>   
+      2 +import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+        +t/mermaid.esm.min.mjs';                                         
+      3 +mermaid.initialize({startOnLoad:false});                        
+      4 +const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        +>public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        +lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        +IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        +b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        +[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        +)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        +   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        +ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        +(Documents tab)\n    participant API as API server\n    particip
+        +ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        +t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        +alt New section / module\n        U->>API: POST /api/sections {d
+        +isplayName}\n        API->>DB: create collection (cosine, embedd
+        +ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        +isting section\n        Note over U: pick it in the sidebar\n   
+        + end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        +rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        + .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        +2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        +PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        +s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        +tatus\n    end\n\n    Note over Q: runs in background, concurren
+        +cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        +. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        +plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        + sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        + with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        +VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        +tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        +>DB: delete the previous version of the same filename (only afte
+        +r the new one is … [+1695 chars]                                
+      5 +for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+        +t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+        +oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+        +}catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }            
+      6 +window.__result=out; document.title='done';                     
+      7 +</script>                                                       
+
+  Called playwright 3 times (ctrl+o to expand)
+
+⏺ express.static ignores dotfiles, so the check page returned 404. I'll rename
+  it (it's temporary and gets deleted afterwards):
+
+⏺ Bash(cd ~/Downloads/rag-generator && mv public/.mermaid-check.html
+      public/zz-mermaid-check.html)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +9 lines (ctrl+o to expand)
+  ⎿  Deleted public/.mermaid-check.html (+0 -7)
+      1 -<!doctype html><meta charset=utf-8><body><script type=module>   
+      2 -import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+        -t/mermaid.esm.min.mjs';                                         
+      3 -mermaid.initialize({startOnLoad:false});                        
+      4 -const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        ->public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        -lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        -IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        -b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        -[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        -)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        -   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        -ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        -(Documents tab)\n    participant API as API server\n    particip
+        -ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        -t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        -alt New section / module\n        U->>API: POST /api/sections {d
+        -isplayName}\n        API->>DB: create collection (cosine, embedd
+        -ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        -isting section\n        Note over U: pick it in the sidebar\n   
+        - end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        -rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        - .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        -2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        -PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        -s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        -tatus\n    end\n\n    Note over Q: runs in background, concurren
+        -cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        -. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        -plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        - sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        - with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        -VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        -tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        ->DB: delete the previous version of the same filename (only afte
+        -r the new one is … [+1695 chars]                                
+      5 -for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+        -t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+        -oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+        -}catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }            
+      6 -window.__result=out; document.title='done';                     
+      7 -</script>                                                       
+  ⎿  Created public/zz-mermaid-check.html (+7 -0)
+      1 +<!doctype html><meta charset=utf-8><body><script type=module>   
+      2 +import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+        +t/mermaid.esm.min.mjs';                                         
+      3 +mermaid.initialize({startOnLoad:false});                        
+      4 +const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        +>public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        +lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        +IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        +b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        +[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        +)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        +   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        +ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        +(Documents tab)\n    participant API as API server\n    particip
+        +ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        +t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        +alt New section / module\n        U->>API: POST /api/sections {d
+        +isplayName}\n        API->>DB: create collection (cosine, embedd
+        +ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        +isting section\n        Note over U: pick it in the sidebar\n   
+        + end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        +rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        + .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        +2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        +PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        +s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        +tatus\n    end\n\n    Note over Q: runs in background, concurren
+        +cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        +. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        +plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        + sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        + with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        +VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        +tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        +>DB: delete the previous version of the same filename (only afte
+        +r the new one is … [+1695 chars]                                
+      5 +for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+        +t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+        +oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+        +}catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }            
+      6 +window.__result=out; document.title='done';                     
+      7 +</script>                                                       
+
+  Called playwright 3 times (ctrl+o to expand)
+
+⏺ Good thing I checked: the ask-flow diagram fails to parse, because Mermaid
+  reads { inside a label as a diamond node. I'll quote that label and re-run the
+  check:
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='README.md'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated README.md (+1 -1)
+      81  
+      82  ```mermaid
+      83  flowchart TD
+      84 -    A[User asks a question<br/>POST /api/ask {question, section
+         -s?}] --> B[Embed question<br/>Gemini RETRIEVAL_QUERY]          
+      84 +    A["User asks a question<br/>POST /api/ask { question, secti
+         +ons? }"] --> B[Embed question<br/>Gemini RETRIEVAL_QUERY]      
+      85      B --> C{Sections ticked?}
+      86      C -- Yes: manual --> D[Search only the ticked sections<br/>
+          top-K chunks each]
+      87      C -- No: auto --> E[Search every section<br/>top-K chunks e
+          ach]
+  ⎿  Updated public/zz-mermaid-check.html (+1 -1)
+      1  <!doctype html><meta charset=utf-8><body><script type=module>
+      2  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+         t/mermaid.esm.min.mjs';
+      3  mermaid.initialize({startOnLoad:false});
+      4 -const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        ->public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        -lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        -IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        -b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        -[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        -)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        -   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        -ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        -(Documents tab)\n    participant API as API server\n    particip
+        -ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        -t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        -alt New section / module\n        U->>API: POST /api/sections {d
+        -isplayName}\n        API->>DB: create collection (cosine, embedd
+        -ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        -isting section\n        Note over U: pick it in the sidebar\n   
+        - end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        -rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        - .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        -2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        -PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        -s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        -tatus\n    end\n\n    Note over Q: runs in background, concurren
+        -cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        -. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        -plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        - sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        - with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        -VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        -tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        ->DB: delete the previous version of the same filename (only afte
+        -r the new one is … [+1695 chars]                                
+      4 +const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        +>public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        +lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        +IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        +b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        +[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        +)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        +   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        +ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        +(Documents tab)\n    participant API as API server\n    particip
+        +ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        +t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        +alt New section / module\n        U->>API: POST /api/sections {d
+        +isplayName}\n        API->>DB: create collection (cosine, embedd
+        +ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        +isting section\n        Note over U: pick it in the sidebar\n   
+        + end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        +rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        + .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        +2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        +PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        +s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        +tatus\n    end\n\n    Note over Q: runs in background, concurren
+        +cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        +. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        +plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        + sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        + with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        +VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        +tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        +>DB: delete the previous version of the same filename (only afte
+        +r the new one is … [+1701 chars]                                
+      5  for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+         t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+         oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+         }catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }
+      6  window.__result=out; document.title='done';
+      7  </script>
+
+  Called playwright 3 times (ctrl+o to expand)
+
+⏺ All four diagrams render. I'll take a quick look at the two flow diagrams to
+  check they read clearly:
+
+  Called playwright (ctrl+o to expand)
+
+⏺ The diagrams read well. One label still shows the old "cites as 1, 2" text, so
+  my second replacement didn't apply. I'll check:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      91      G --> H
+      92      H --> I{Any chunks?}
+      93      I -- No --> J[Reply: no documents to search]
+      94 -    I -- Yes --> K[Gemini answers using ONLY the excerpts<br/>c
+         -ites as 1, 2 and says so when the answer isn't there]          
+      94 +    I -- Yes --> K["Gemini answers using ONLY the excerpts<br/>
+         +cites as [1] [2], and says so when the answer isn't there"]    
+      95      K --> L[Parse citations, mark cited sources]
+      96      L --> M[Response: answer + sources + routing<br/>which sect
+          ions were used and their match scores]
+      97      M --> N[UI: Markdown answer, clickable citation pills,<br/>
+          'Auto-routed to Wisetap' tag]
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      import re,json…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +9 lines (ctrl+o to expand)
+  ⎿  Updated public/zz-mermaid-check.html (+1 -1)
+      1  <!doctype html><meta charset=utf-8><body><script type=module>
+      2  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+         t/mermaid.esm.min.mjs';
+      3  mermaid.initialize({startOnLoad:false});
+      4 -const blocks=[["README.md", "flowchart LR\n    UI[Browser UI<br/
+        ->public/] -->|REST| API[Express API<br/>src/api]\n    API -->|va
+        -lidate + enqueue| Q[IngestionQueue<br/>in-process]\n    Q --> P[
+        -IngestionPipeline]\n    P --> PA[parsing/<br/>md \u00b7 txt \u00
+        -b7 pdf]\n    P --> CH[chunking/<br/>heading-aware]\n    P --> EM
+        -[embedding/<br/>Gemini]\n    P --> VS[(vectorstore/<br/>ChromaDB
+        -)]\n    API --> ASK[AskService<br/>src/query]\n    ASK --> EM\n 
+        -   ASK --> VS\n    ASK --> GEN[generation/<br/>Gemini]\n"], ["RE
+        -ADME.md", "sequenceDiagram\n    autonumber\n    actor U as User 
+        -(Documents tab)\n    participant API as API server\n    particip
+        -ant Q as Ingestion queue<br/>(in-process worker)\n    participan
+        -t G as Gemini embeddings\n    participant DB as ChromaDB\n\n    
+        -alt New section / module\n        U->>API: POST /api/sections {d
+        -isplayName}\n        API->>DB: create collection (cosine, embedd
+        -ingModel in metadata)\n        API-->>U: 201 {name}\n    else Ex
+        -isting section\n        Note over U: pick it in the sidebar\n   
+        - end\n\n    U->>API: POST /api/sections/:name/documents (multipa
+        -rt, \u226410 files)\n    API->>API: validate each file<br/>type:
+        - .md .txt .pdf<br/>PDF \u2264100 pages & \u226420 MB<br/>text \u
+        -2264300 KB (~100 pages)\n    API->>Q: enqueue valid files\n    A
+        -PI-->>U: 202 {jobs, rejected[] with reasons}\n\n    loop UI poll
+        -s GET /api/jobs?section=\u2026 every ~1s\n        U->>API: job s
+        -tatus\n    end\n\n    Note over Q: runs in background, concurren
+        -cy 2,<br/>never two jobs for the same file at once\n    Q->>Q: 1
+        -. parse (md/txt as UTF-8, PDF via unpdf)\n    Q->>Q: 2. chunk: s
+        -plit by Markdown headings, then<br/>paragraph \u203a line \u203a
+        - sentence (\u22641000 chars, 150 overlap),<br/>prefix each chunk
+        - with its heading breadcrumb\n    Q->>G: 3. embed chunks (RETRIE
+        -VAL_DOCUMENT, batches of 100, retry on 429/5xx)\n    G-->>Q: vec
+        -tors\n    Q->>DB: 4. upsert chunks + vectors + metadata\n    Q->
+        ->DB: delete the previous version of the same filename (only afte
+        -r the new one is … [+1701 chars]                                
+      4 +const blocks=[["README.md", "flowchart TD\n    A[\"User asks a q
+        +uestion<br/>POST /api/ask { question, sections? }\"] --> B[Embed
+        + question<br/>Gemini RETRIEVAL_QUERY]\n    B --> C{Sections tick
+        +ed?}\n    C -- Yes: manual --> D[Search only the ticked sections
+        +<br/>top-K chunks each]\n    C -- No: auto --> E[Search every se
+        +ction<br/>top-K chunks each]\n    E --> F[Score each section by 
+        +its closest chunk]\n    F --> G[Keep the best section plus any w
+        +ithin<br/>ROUTING_MARGIN 0.04 of it<br/>one module for focused q
+        +uestions,<br/>several for cross-module ones]\n    D --> H[Merge 
+        +hits and keep global top-K by distance]\n    G --> H\n    H --> 
+        +I{Any chunks?}\n    I -- No --> J[Reply: no documents to search]
+        +\n    I -- Yes --> K[\"Gemini answers using ONLY the excerpts<br
+        +/>cites as [1] [2], and says so when the answer isn't there\"]\n
+        +    K --> L[Parse citations, mark cited sources]\n    L --> M[Re
+        +sponse: answer + sources + routing<br/>which sections were used 
+        +and their match scores]\n    M --> N[UI: Markdown answer, clicka
+        +ble citation pills,<br/>'Auto-routed to Wisetap' tag]\n"]]; cons
+        +t out=[];                                                       
+      5  for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+         t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+         oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+         }catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }
+      6  window.__result=out; document.title='done';
+      7  </script>
+
+  Called playwright 3 times (ctrl+o to expand)
+
+⏺ The fixed diagram renders. (The wait timeout is harmless: "done" is the page
+  title, not visible text.) I'll delete the temporary check page and look at the
+  auto-routing tag in the real chat UI:
+
+⏺ Bash(cd ~/Downloads/rag-generator && rm public/zz-mermaid-check.html && ls
+      public)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +12 lines (ctrl+o to expand)
+  ⎿  Deleted public/zz-mermaid-check.html (+0 -7)
+      1 -<!doctype html><meta charset=utf-8><body><script type=module>   
+      2 -import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dis
+        -t/mermaid.esm.min.mjs';                                         
+      3 -mermaid.initialize({startOnLoad:false});                        
+      4 -const blocks=[["README.md", "flowchart TD\n    A[\"User asks a q
+        -uestion<br/>POST /api/ask { question, sections? }\"] --> B[Embed
+        - question<br/>Gemini RETRIEVAL_QUERY]\n    B --> C{Sections tick
+        -ed?}\n    C -- Yes: manual --> D[Search only the ticked sections
+        -<br/>top-K chunks each]\n    C -- No: auto --> E[Search every se
+        -ction<br/>top-K chunks each]\n    E --> F[Score each section by 
+        -its closest chunk]\n    F --> G[Keep the best section plus any w
+        -ithin<br/>ROUTING_MARGIN 0.04 of it<br/>one module for focused q
+        -uestions,<br/>several for cross-module ones]\n    D --> H[Merge 
+        -hits and keep global top-K by distance]\n    G --> H\n    H --> 
+        -I{Any chunks?}\n    I -- No --> J[Reply: no documents to search]
+        -\n    I -- Yes --> K[\"Gemini answers using ONLY the excerpts<br
+        -/>cites as [1] [2], and says so when the answer isn't there\"]\n
+        -    K --> L[Parse citations, mark cited sources]\n    L --> M[Re
+        -sponse: answer + sources + routing<br/>which sections were used 
+        -and their match scores]\n    M --> N[UI: Markdown answer, clicka
+        -ble citation pills,<br/>'Auto-routed to Wisetap' tag]\n"]]; cons
+        -t out=[];                                                       
+      5 -for (const [i,[f,b]] of blocks.entries()){ try{ const {svg}=awai
+        -t mermaid.render('m'+i,b); document.body.insertAdjacentHTML('bef
+        -oreend','<h3>'+f+' #'+i+'</h3>'+svg); out.push(f+' #'+i+' OK'); 
+        -}catch(e){ out.push(f+' #'+i+' ERR '+e.message); } }            
+      6 -window.__result=out; document.title='done';                     
+      7 -</script>                                                       
+
+  Called playwright 4 times (ctrl+o to expand)
+
+⏺ Auto mode checks out, but I noticed $\le 1$ showing as raw LaTeX in the
+  answer—I'll verify if that's from the source doc and check the routing tag
+  that's currently scrolled out of view.
+
+  Searched for 1 pattern, called playwright (ctrl+o to expand)
+
+⏺ I found the issue: the model rewrote the source's ≤1 as LaTeX ($\le 1$), which
+  the UI can't render, and routing picked "UI Test" at 74% vs 67%. I'll add a
+  no-LaTeX rule to the prompt and remove my "UI Test" section so only Wisetap
+  remains.
+
+⏺ Bash(cd ~/Downloads/rag-generator && python3 - <<'EOF'
+      p='src/generation/gemini.ts'; s=open(p).read()…)
+  ⎿  setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     setValueForKeyFakeAssocArray:27: command not found: _encode
+     … +35 lines (ctrl+o to expand)
+  ⎿  Updated src/generation/gemini.ts (+2 -1)
+       7  - If the excerpts do not contain the answer, say you could not 
+          find it in the documents. Do not use outside knowledge or guess
+          .
+       8  - If the excerpts only partially answer the question, answer wh
+          at they support and say what is missing.
+       9  - Cite the excerpts you used inline right after the claim they 
+          support, one bracket per excerpt: [1] or [1][3], never [1, 3].
+      10 -- Be concise and direct. Use Markdown (short paragraphs, bullet
+         - lists, tables, \`code\`) where it helps readability.`;        
+      10 +- Be concise and direct. Use Markdown (short paragraphs, bullet
+         + lists, tables, \`code\`) where it helps readability.          
+      11 +- Never use LaTeX; write symbols as plain Unicode (≤, →, ×) exa
+         +ctly as the excerpts do.`;                                     
+      12  
+      13  export class GeminiAnswerGenerator implements AnswerGenerator {
+      14    constructor(
+  ⎿  (timeout 2m)
+
+⏺ DocChat is built and tested end to end. The Wisetap doc is already loaded, so
+  you can try it straight away:
+
+  cd ~/Downloads/rag-generator && npm run dev    # open http://localhost:3000
+
+  Chroma is still running in Docker. I stopped the app server and deleted my
+  test section, so Wisetap is the only section.
+
+  What you'll see in the UI
+  - Chat tab: if you leave every section unticked, each question goes
+    automatically to the section that matches it best. Ticking sections limits
+    the search to those. Answers are Markdown with clickable [n] citations that
+    open the source excerpt. Each answer has a tag such as "Auto-routed to
+    Wisetap", and hovering it shows the match score for each section.
+  - Documents tab: create a section, or pick an existing one, and drag files in.
+    Each file shows parse → chunk → embed → save progress, and you can keep
+    chatting meanwhile. Re-uploading a file with the same name replaces the old
+    version.
+
+  How I handled your requests
+  - Size limits: PDFs can be up to 100 pages and 20 MB; text files up to 300 KB
+    (about 100 pages); at most 10 files per upload. Files are checked when
+    uploaded, and each rejected file gets its own reason.
+  - Async uploads: as you asked, there's no queue infrastructure. Upload returns
+    immediately and a background worker inside the server does the processing.
+    During ingestion, other API calls answered in about 9 ms. The worker sits
+    behind an IngestionQueue interface so a real queue can replace it later.
+  - Routing when no module is picked: the server searches every section, keeps
+    the best one plus any within 0.04 of it, and answers from those. I chose
+    this margin from measurements:
+    - Questions about one module had a gap of at least 0.064 between the best
+      and second-best section.
+    - A question spanning two modules had a gap of 0.008, so it correctly used
+      both.
+    - This adds no extra model call.
+  - "Maintain it": I took this to mean recording which module answered each
+    question. Every answer now returns that routing information, and the README
+    diagrams match the current code. Tell me if you meant something else.
+  - Docs: the README has Mermaid diagrams for the upload flow and the ask flow,
+    plus an architecture diagram. docs/FUTURE_IMPROVEMENTS.md covers the durable
+    queue and separate workers, follow-up questions, hybrid search and more. I
+    rendered all four diagrams with Mermaid's own parser, which caught a syntax
+    error in one; it's fixed.
+
+  Problems I found and fixed along the way
+  - Grouped citations: the model sometimes writes [4, 5], which wasn't counted
+    as cited and didn't become a clickable pill. Both now handle it.
+  - Slow answers: answers took about 5–6 s. Setting Gemini's thinking level to
+    LOW brought them down to about 3 s with the same quality.
+  - Network blips: one connection timeout to Gemini failed an ingestion job.
+    Gemini calls now retry with backoff.
+  - Duplicate uploads: two uploads of the same file running at once could create
+    duplicates. The queue no longer runs them in parallel.
+  - Cut-off excerpts: the source preview stopped before the cited evidence; it
+    now shows the full chunk.
+  - LaTeX in answers: the model turned ≤1 into $\le 1$, which the UI can't
+    render. The prompt now forbids LaTeX.
+
+  Known limits
+  - Each chat question is searched on its own, so a follow-up like "what about
+    its scale?" won't carry over context.
+  - Queued jobs are lost if the server restarts.
+  - There are no automated tests yet. Everything above was checked by hand
+    through the API and the browser.
+
+  All three are in the improvements doc.
+
+  Nothing is committed to git yet; .env (and your key) is ignored. Should I make
+  the initial commit?
+
+✻ Baked for 21m 12s · done 7:39 PM
+
+※ recap: You're building a Gemini and Chroma RAG app with a chat UI and section-based document uploads, and it's done and tested with the Wisetap doc loaded. Next, decide whether I should make the initial git commit; nothing is committed yet. (disable recaps in /config)
+
+❯ lwets push the project to github ensuring .env is part of .gitignore , on my  
+  persnal gituhub account https://github.com/sushant8421                        
+⏺ Before pushing, I'll check which GitHub account gh is logged into and confirm
+  that no secrets would end up in the commit.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All checks pass: GitHub auth, git email, gitignored .env, no exposed Gemini
+  keys, and the repo name is free. One decision needed before I create the repo.
+
+⏺ User answered Claude's questions:
+  ⎿  · Should the GitHub repo sushant8421/rag-generator be public or private? → 
+     Public (Recommended)
+
+❯ also i want to export the conversation in this chat to the repo as well       
+
+⏺ I'll push the code now since the repo will be public. The /export command can
+  only be run by you, so once you provide the transcript I'll scan it for
+  secrets before committing.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The repo's live at https://github.com/sushant8421/rag-generator and confirmed
+  .env isn't included. I need you to run /export 
+  transcripts/claude-code-session.txt to generate the transcript, and since
+  it'll contain CityMall doc excerpts, let me know whether to publish as-is or
+  strip those sections before I commit and push.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I've created the transcripts/ folder for the export.
+
+✻ Cogitated for 1m 11s · done 7:50 PM
