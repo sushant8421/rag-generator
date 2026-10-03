@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DocChat</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%232f6fed' d='M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/app.css" />
+  <script src="/vendor/marked.js"></script>
+  <script src="/vendor/purify.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm10 1.5V10h4.5L14 5.5ZM7 13h10v1.5H7V13Zm0 3.5h7V18H7v-1.5Z"/></svg>
+      <span>DocChat</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="chat" role="tab">Chat</button>
+      <button class="tab" data-view="docs" role="tab">Documents</button>
+    </nav>
+    <div class="status" id="status" title="Vector database status"><span class="dot"></span><span class="label">…</span></div>
+  </header>
+
+  <!-- ============ CHAT ============ -->
+  <main class="view" id="view-chat">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Search in</h2>
+        <button class="link hidden" id="scope-all">Clear</button>
+      </div>
+      <ul class="scope-list" id="scope-list"></ul>
+      <p class="hint" id="scope-hint"></p>
+    </aside>
+
+    <section class="chat">
+      <div class="messages" id="messages">
+        <div class="empty" id="chat-empty">
+          <h1>Ask your documents</h1>
+          <p>Answers come only from the documents you've uploaded, with citations you can check.</p>
+          <div class="suggestions" id="suggestions"></div>
+        </div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="question" rows="1" placeholder="Ask a question…" maxlength="2000" required></textarea>
+        <button type="submit" class="btn primary" id="send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z"/></svg>
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <!-- ============ DOCUMENTS ============ -->
+  <main class="view hidden" id="view-docs">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Sections</h2>
+      </div>
+      <ul class="section-list" id="section-list"></ul>
+      <form class="new-section" id="new-section">
+        <input id="new-section-name" placeholder="New section, e.g. Payments" maxlength="100" />
+        <button class="btn" type="submit">Add</button>
+      </form>
+      <p class="error-text" id="new-section-error"></p>
+    </aside>
+
+    <section class="docs" id="docs-panel">
+      <div class="empty" id="docs-empty">
+        <h1>No section selected</h1>
+        <p>Create a section (a topic like "Wisetap" or "Payments") on the left, then add documents to it.</p>
+      </div>
+
+      <div class="hidden" id="docs-detail">
+        <div class="docs-head">
+          <div>
+            <h1 id="sec-title"></h1>
+            <p class="muted" id="sec-meta"></p>
+          </div>
+          <button class="btn danger-ghost" id="sec-delete">Delete section</button>
+        </div>
+
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file-input" multiple hidden />
+          <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M11 16V7.8l-3.6 3.6L6 10l6-6 6 6-1.4 1.4L13 7.8V16h-2Zm-6 4v-5h2v3h10v-3h2v5H5Z"/></svg>
+          <strong>Drop files here or click to browse</strong>
+          <span class="muted" id="limits"></span>
+        </label>
+
+        <div id="jobs-wrap" class="hidden">
+          <h3>Processing</h3>
+          <ul class="jobs" id="jobs"></ul>
+        </div>
+
+        <h3>Documents</h3>
+        <table class="doc-table">
+          <thead><tr><th>File</th><th>Chunks</th><th>Added</th><th></th></tr></thead>
+          <tbody id="doc-rows"></tbody>
+        </table>
+        <p class="muted hidden" id="no-docs">No documents in this section yet.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
